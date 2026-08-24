@@ -35,6 +35,7 @@ class DshService extends EventEmitter {
     this.child = null;
     this.url = null;
     this.stopped = false;
+    this.ready = false;
   }
 
   resolveKernel() {
@@ -88,13 +89,27 @@ class DshService extends EventEmitter {
     });
 
     this.child.stdout.on('data', (d) => this.#scanStdout(d));
-    this.child.stderr.on('data', (d) => this.logger.log(`[dsh:err] ${d.toString('utf8').trimEnd()}`));
+    this.child.stderr.on('data', (d) => {
+      const text = d.toString('utf8');
+      // 保留 stderr 尾部，内核在就绪前崩溃时用于给出可读的错误提示。
+      this.#stderrTail = (this.#stderrTail + text).slice(-4000);
+      this.logger.log(`[dsh:err] ${text.trimEnd()}`);
+    });
     this.child.on('error', (err) => {
       this.logger.error('[dsh] 进程错误:', err.message);
       this.emit('error', err);
     });
     this.child.on('exit', (code, signal) => {
       this.logger.log(`[dsh] 退出 code=${code} signal=${signal}`);
+      // 内核在就绪前退出（例如内置插件模块解析失败导致 ERR_MODULE_NOT_FOUND），
+      // 若不在这里报错，外壳只会收到 exit 事件，闪屏将永远挂起、用户看不到任何提示。
+      if (!this.stopped && !this.ready) {
+        const detail = this.#stderrTail.trim();
+        this.emit('error', new Error(
+          `dsh 内核启动失败（code=${code}${signal ? ` signal=${signal}` : ''}）` +
+          (detail ? `\n${detail}` : '')
+        ));
+      }
       this.emit('exit', { code, signal });
       this.child = null;
     });
@@ -104,6 +119,7 @@ class DshService extends EventEmitter {
   }
 
   #stdoutBuffer = '';
+  #stderrTail = '';
 
   #scanStdout(d) {
     this.#stdoutBuffer += d.toString('utf8');
@@ -127,6 +143,7 @@ class DshService extends EventEmitter {
       if (this.stopped) return;
       const req = http.get(url + '/', (res) => {
         res.resume();
+        this.ready = true;
         this.emit('ready', url);
       });
       req.on('error', () => this.#schedule(deadline, attempt));

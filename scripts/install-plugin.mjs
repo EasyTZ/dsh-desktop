@@ -55,4 +55,22 @@ if (existsSync(webAppPatch)) {
   }
 }
 
+// 3. 把插件登记进 dsh 的 package.json dependencies。
+// 运行时 dsh 会执行 healProfilesModuleFallback：遍历安装包 dependencies 闭包，
+// 在 $DSH_HOME/profiles/node_modules 为每个包建解析 symlink，web profile 的
+// balance 条目才能从 profile 目录解析到该插件。若只拷 node_modules 而不登记，
+// 依赖闭包不包含它，dsh web 启动 import 该模块即 ERR_MODULE_NOT_FOUND、进程
+// 立即退出——桌面端表现为闪屏黑屏卡死、无任何提示。
+const dshManifestPath = join(installDir, 'package.json');
+const dshManifest = JSON.parse(readFileSync(dshManifestPath, 'utf8'));
+const pluginVersion = JSON.parse(readFileSync(join(pluginSrc, 'package.json'), 'utf8')).version;
+dshManifest.dependencies ??= {};
+if (dshManifest.dependencies['@deepseek-ai/dsh-ui-balance'] === void 0) {
+  dshManifest.dependencies['@deepseek-ai/dsh-ui-balance'] = pluginVersion;
+  writeFileSync(dshManifestPath, JSON.stringify(dshManifest, null, 2) + '\n');
+  console.log(`[install-plugin] 已在 dsh package.json 登记依赖 @deepseek-ai/dsh-ui-balance@${pluginVersion}`);
+} else {
+  console.log('[install-plugin] dsh package.json 已登记 dsh-ui-balance 依赖，跳过');
+}
+
 console.log('[install-plugin] 完成');
