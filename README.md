@@ -146,6 +146,18 @@ npm run dist             # 产出安装包 + 绿色版到 release/
 
 Electron 外壳 + 自包含 dsh 内核：外壳 `spawn` 内置的 `node.exe .../dsh/lib/bin.js web`，就绪后加载本地回环地址。自定义插件放在 `plugins/`，通过 `install-plugin` 装进 dsh。
 
+### 自定义插件
+
+插件放在 `plugins/<name>/`，通过 `install-plugin` 装进 dsh。**新增插件只需在 `scripts/install-plugin.mjs` 的 `PLUGINS` 清单加一项**（`srcDir` / `patchFile` / `entryId`），脚本会自动完成三件事：
+
+1. 拷贝插件源码到 dsh 的 `node_modules`；
+2. 在目标 bundle patch 末尾追加激活条目；
+3. 把插件登记进 dsh 的 `package.json` `dependencies`。
+
+> ⚠️ 第 3 步不能省：dsh 运行时靠 `healProfilesModuleFallback` 遍历依赖闭包、在 `$DSH_HOME/profiles/node_modules` 建解析软链；只拷 `node_modules` 而不登记依赖，内核启动时 `import` 该插件会 `ERR_MODULE_NOT_FOUND`、进程秒退，桌面端表现为黑屏卡死。
+
+> ⚠️ `install-plugin` 改的是本机全局 dsh 安装目录，**每次 `npm install -g @deepseek-ai/dsh` 升级后都要重跑一次**，否则插件（拷贝、激活条目、依赖登记）会被覆盖丢失。
+
 ---
 
 ## License
