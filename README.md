@@ -2,7 +2,9 @@
 
 以 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（下称 `dsh`）为内核的 Windows 桌面版 AI 编程助手。**双击即用，不需要装 Node.js、不需要懂命令行。**
 
-![截图](docs/screenshot.png)
+<p align="center">
+  <img src="docs/screenshot.png" alt="深色主题" width="800">
+</p>
 
 <p align="center">
   <a href="https://github.com/EasyTZ/Deepseek-Harness-Desktop/releases/latest"><b>⬇️ 下载最新版</b></a>
@@ -10,7 +12,7 @@
 
 <p align="center">
   <sub>浅色主题：</sub><br>
-  <img src="docs/screenshot-light.png" alt="浅色主题" width="640">
+  <img src="docs/screenshot-light.png" alt="浅色主题" width="800">
 </p>
 
 ---
