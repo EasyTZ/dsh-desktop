@@ -2,7 +2,7 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
-const TITLEBAR_HEIGHT = 40;
+const TITLEBAR_HEIGHT = 32;
 
 // 窗口控制按钮图标（SVG，stroke 跟随 currentColor）。
 const ICONS = {
