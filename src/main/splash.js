@@ -19,7 +19,7 @@ function createSplashWindow() {
     skipTaskbar: true,
     alwaysOnTop: true,
     show: false,
-    backgroundColor: '#0d1117',
+    backgroundColor: '#151517',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

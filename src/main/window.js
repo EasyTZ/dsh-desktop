@@ -24,6 +24,10 @@ function isLoopback(u) {
   }
 }
 
+/**
+ * @param {string} url
+ * @param {{onCloseRequest?: (event: any, win: any) => void, onFocusChanged?: (focused: boolean) => void}} [opts]
+ */
 function createMainWindow(url, { onCloseRequest, onFocusChanged } = {}) {
   const win = new BrowserWindow({
     width: 1280,
@@ -31,7 +35,7 @@ function createMainWindow(url, { onCloseRequest, onFocusChanged } = {}) {
     minWidth: 980,
     minHeight: 640,
     title: 'DeepSeek Harness Desktop',
-    backgroundColor: '#0d1117',
+    backgroundColor: '#151517',
     icon: iconPath(),
     show: false,
     autoHideMenuBar: true,

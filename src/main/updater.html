@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
+  <title>DeepSeek 内核更新</title>
+  <script>
+    // 必须在 <style> 生效前就把主题定下来：主进程已经通过 query string 把 dsh 主窗口
+    // 当前的浅色/深色状态带过来了，这里同步写属性，不然会先画一帧焊死的深色再跳变。
+    document.documentElement.dataset.theme =
+      new URLSearchParams(location.search).get('theme') === 'light' ? 'light' : 'dark';
+  </script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --accent: #4d6bfe;
+      --accent-soft: rgba(77, 107, 254, 0.14);
+      --ok: #3fb950;
+      --err: #f0617a;
+      /* 深色是默认值，取值直接对齐 dsh 的设计 token（dsh-client-ui-theme/design-platform.css
+         深色块），保证更新窗口和主界面是同一套颜色，不会看起来像另一个程序。
+         浅色覆盖见下面 html[data-theme="light"]，取值来自同一套 token 的浅色实测结果。 */
+      --bg: #151517;          /* alias-bg-base */
+      --text: #f9fafb;        /* alias-label-primary */
+      --text-dim: #cfd3d6;    /* alias-label-secondary */
+      --card: #1b1b1c;        /* 侧边栏同款面板色 */
+      --border: rgba(255, 255, 255, 0.06);  /* alias-border-l1 */
+      --hover: rgba(255, 255, 255, 0.08);   /* alias-interactive-bg-hover */
+      --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+        'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    }
+    html[data-theme="light"] {
+      color-scheme: light;
+      --bg: #ffffff;
+      --text: #0f1115;
+      --text-dim: #61666b;
+      --card: #f9fafb;
+      --border: rgba(0, 0, 0, 0.04);
+      --hover: rgba(38, 49, 72, 0.06);
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      height: 100%; width: 100%; overflow: hidden;
+      background: var(--bg);
+      font-family: var(--font);
+      color: var(--text);
+      -webkit-user-select: none; user-select: none;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap { height: 100%; display: flex; flex-direction: column; padding: 20px 22px 16px; }
+
+    header { display: flex; align-items: center; gap: 10px; flex: none; }
+    .logo {
+      width: 32px; height: 32px; padding: 5px; border-radius: 9px;
+      background: var(--accent-soft); flex: none;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .logo svg { width: 100%; height: 100%; display: block; }
+    .head-title { font-size: 14px; font-weight: 600; letter-spacing: 0.2px; }
+    .head-sub { font-size: 11.5px; color: var(--text-dim); margin-top: 1px; }
+
+    /* stage 负责垂直居中；每个 view 自己也必须是 flex 列，否则内部元素既没有间距
+       也不居中 —— 老版本按钮折行、元素挤成一团，就是因为 view 内部走的是块级流。 */
+    .stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+    .view { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+    .view.hidden { display: none; }
+
+    .spinner { position: relative; width: 52px; height: 52px; flex: none; }
+    .spinner .ring {
+      position: absolute; inset: 0; border-radius: 50%;
+      background: conic-gradient(from 0deg, rgba(77,107,254,0) 0%, rgba(77,107,254,0.95) 100%);
+      -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+      mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+      animation: spin 0.9s linear infinite;
+    }
+    .spinner .glow {
+      position: absolute; inset: 8px; border-radius: 50%;
+      background: rgba(77,107,254,0.12); filter: blur(6px);
+      animation: breathe 1.8s ease-in-out infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes breathe { 0%,100% { opacity:.5; transform: scale(1); } 50% { opacity:1; transform: scale(1.12); } }
+
+    .status-icon {
+      width: 46px; height: 46px; border-radius: 50%; flex: none;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px; line-height: 1;
+    }
+    .status-icon.ok  { background: rgba(63,185,80,0.12);  color: var(--ok); }
+    .status-icon.err { background: rgba(240,97,122,0.12); color: var(--err); }
+    .status-icon.info{ background: var(--accent-soft);    color: var(--accent); font-weight: 700; }
+
+    .msg { font-size: 15px; font-weight: 600; text-align: center; }
+    .detail {
+      font-size: 12.5px; color: var(--text-dim); text-align: center; line-height: 1.6;
+      max-width: 100%; word-break: break-word;
+    }
+    /* 报错可能很长（registry / pnpm 输出），给它独立滚动区，别把按钮挤出窗口。 */
+    .detail.scroll {
+      text-align: left; max-height: 108px; overflow-y: auto;
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 8px; padding: 9px 11px; width: 100%;
+      -webkit-user-select: text; user-select: text;
+    }
+
+    /* 版本对比一行说完，不再用「三行卡片 + 页脚再重复一遍」。 */
+    .ver-row {
+      display: flex; align-items: center; justify-content: center; gap: 12px;
+      width: 100%; padding: 11px 14px;
+      background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+      font-size: 13.5px; font-variant-numeric: tabular-nums;
+    }
+    .ver-row .old { color: var(--text-dim); text-decoration: line-through; text-decoration-color: rgba(139,148,158,0.5); }
+    .ver-row .arrow { color: var(--text-dim); font-size: 14px; flex: none; }
+    .ver-row .new { color: var(--accent); font-weight: 700; }
+
+    .progress { width: 100%; height: 6px; background: var(--card); border-radius: 3px; overflow: hidden; }
+    .progress .bar { height: 100%; width: 0%; background: linear-gradient(90deg, #4d6bfe, #7d8bff); border-radius: 3px; transition: width .25s ease; }
+    .progress.indeterminate .bar { width: 40%; animation: slide 1.2s ease-in-out infinite; }
+    .progress.hidden { display: none; }
+    @keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
+
+    .actions { display: flex; gap: 10px; width: 100%; margin-top: 2px; }
+    .btn {
+      flex: 1 1 0; min-width: 0; height: 38px; padding: 0 10px; border-radius: 9px;
+      border: 1px solid var(--border); background: transparent; color: var(--text);
+      font-size: 13.5px; font-weight: 600; font-family: inherit;
+      cursor: pointer; transition: background .15s ease, transform .05s ease;
+      /* 关键：不许折行。老版本「立即更新」被挤成两行就是缺了这一条。 */
+      white-space: nowrap;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .btn:hover { background: var(--hover); }
+    .btn:active { transform: scale(0.98); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn.primary:hover { background: #5a77ff; }
+    .btn:disabled { opacity: .5; cursor: default; }
+
+    footer {
+      flex: none; margin-top: 14px; padding-top: 11px; border-top: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      font-size: 11px; color: var(--text-dim);
+    }
+    footer .lab { flex: none; }
+    footer .src-group { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    /* 切换源的小按钮放在文字左边：单纯点文字不够显眼，容易被当成纯说明文字而不是可点的控件。 */
+    footer .src-toggle {
+      flex: none; width: 20px; height: 20px; border-radius: 6px;
+      border: 1px solid var(--border); background: transparent; color: var(--text-dim);
+      font-size: 11px; line-height: 1; cursor: pointer; font-family: inherit;
+      display: inline-flex; align-items: center; justify-content: center;
+      transition: background .15s ease, color .15s ease;
+    }
+    footer .src-toggle:hover { background: var(--hover); color: var(--text); }
+    footer .src {
+      cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    footer .src:hover { color: var(--accent); }
+
+    /* 标题栏右上角常驻关闭：窗口本身 frame:false 没有系统关闭按钮，「已是最新版本」
+       「正在检查」这两个视图原本连个按钮都没有，用户唯一的出路是 Alt+F4——必须每个
+       状态都留一条明路。 */
+    .icon-close {
+      margin-left: auto; flex: none; width: 26px; height: 26px; border-radius: 8px;
+      border: none; background: transparent; color: var(--text-dim); font-size: 14px;
+      font-family: inherit; cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center;
+      transition: background .15s ease, color .15s ease;
+    }
+    .icon-close:hover { background: var(--hover); color: var(--text); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="logo"><svg viewBox="0 0 50 50" fill="none"><path fill="#4D6BFE" d="M48.8354 10.0479C48.3232 9.79199 48.1025 10.2798 47.8032 10.5278C47.7007 10.6079 47.6143 10.7119 47.5273 10.8076C46.7793 11.624 45.9048 12.1597 44.7622 12.0957C43.0923 12 41.666 12.5356 40.4058 13.8398C40.1377 12.2319 39.2476 11.272 37.8926 10.6558C37.1836 10.3359 36.4668 10.0156 35.9702 9.31982C35.6235 8.82373 35.5293 8.27197 35.356 7.72754C35.2456 7.3999 35.1353 7.06396 34.7651 7.00781C34.3633 6.94385 34.2056 7.2876 34.0479 7.57568C33.418 8.75195 33.1733 10.0479 33.1973 11.3599C33.2524 14.312 34.4736 16.6641 36.8999 18.3359C37.1758 18.5278 37.2466 18.7197 37.1597 19C36.9946 19.5757 36.7974 20.1357 36.624 20.7119C36.5137 21.0801 36.3486 21.1597 35.9624 21C34.6309 20.4321 33.481 19.5918 32.4644 18.5757C30.7393 16.8721 29.1792 14.9917 27.2334 13.52C26.7764 13.1758 26.3193 12.856 25.8467 12.5518C23.8618 10.584 26.1069 8.96777 26.627 8.77588C27.1704 8.57568 26.8159 7.8877 25.0591 7.896C23.3022 7.90381 21.6953 8.50391 19.647 9.30371C19.3477 9.42383 19.0322 9.51172 18.7095 9.58398C16.8501 9.22363 14.9199 9.14355 12.9033 9.37598C9.10596 9.80762 6.07275 11.6396 3.84326 14.7681C1.16455 18.5278 0.53418 22.7998 1.30664 27.2559C2.11768 31.9521 4.46582 35.8398 8.07373 38.8799C11.8159 42.0322 16.1255 43.5762 21.041 43.2803C24.0269 43.104 27.3516 42.6963 31.1016 39.4561C32.0469 39.936 33.0396 40.1279 34.686 40.272C35.9546 40.3921 37.1758 40.208 38.1211 40.0078C39.6021 39.688 39.4995 38.2881 38.9639 38.0322C34.623 35.9678 35.5762 36.8081 34.71 36.1279C36.9155 33.4639 40.2402 30.6958 41.54 21.728C41.6426 21.0161 41.5557 20.5679 41.54 19.9917C41.5322 19.6396 41.6108 19.5039 42.0049 19.4639C43.0923 19.3359 44.1479 19.0317 45.1167 18.4878C47.9292 16.9199 49.064 14.3438 49.3315 11.2559C49.3711 10.7837 49.3237 10.2959 48.8354 10.0479ZM24.3262 37.8398C20.1196 34.4639 18.0791 33.3521 17.2358 33.3999C16.4482 33.4482 16.5898 34.3682 16.7632 34.9678C16.9443 35.5601 17.1812 35.9683 17.5117 36.4878C17.7402 36.832 17.8979 37.3442 17.2832 37.728C15.9282 38.584 13.5728 37.4399 13.4624 37.3838C10.7207 35.7358 8.42822 33.5601 6.81348 30.584C5.25342 27.7197 4.34766 24.6479 4.19775 21.3677C4.1582 20.5757 4.38672 20.2959 5.15869 20.1519C6.17529 19.96 7.22314 19.9199 8.23926 20.0718C12.5327 20.7119 16.1885 22.6719 19.2529 25.7759C21.002 27.5439 22.3252 29.6558 23.6885 31.7202C25.1377 33.9121 26.6978 36 28.6831 37.7119C29.3843 38.312 29.9434 38.7681 30.479 39.104C28.8643 39.2881 26.1699 39.3281 24.3262 37.8398ZM26.3433 24.6001C26.3433 24.248 26.6191 23.9678 26.9658 23.9678C27.0444 23.9678 27.1152 23.9839 27.1782 24.0078C27.2651 24.04 27.3438 24.0879 27.4067 24.1602C27.5171 24.272 27.5801 24.4321 27.5801 24.6001C27.5801 24.9521 27.3042 25.2319 26.9575 25.2319C26.6108 25.2319 26.3433 24.9521 26.3433 24.6001ZM32.6064 27.8799C32.2046 28.0479 31.8027 28.1919 31.4165 28.208C30.8179 28.2397 30.1641 27.9922 29.8096 27.688C29.2583 27.2158 28.8643 26.9521 28.6987 26.1279C28.6279 25.7759 28.6675 25.2319 28.7305 24.9199C28.8721 24.248 28.7144 23.8159 28.2495 23.4238C27.8716 23.104 27.3911 23.0161 26.8633 23.0161C26.666 23.0161 26.4849 22.9277 26.3511 22.856C26.1304 22.7441 25.9492 22.4639 26.1226 22.1201C26.1777 22.0078 26.4458 21.7358 26.5088 21.688C27.2256 21.272 28.0527 21.4077 28.8169 21.7197C29.5259 22.0161 30.0615 22.5601 30.834 23.3281C31.6216 24.2559 31.7632 24.5117 32.2124 25.208C32.5669 25.752 32.8901 26.312 33.1104 26.9521C33.2446 27.3521 33.0713 27.6802 32.6064 27.8799Z"/></svg></div>
+      <div>
+        <div class="head-title">DeepSeek 内核更新</div>
+        <div class="head-sub">dsh 内核可独立于应用更新</div>
+      </div>
+      <button id="btn-header-close" class="icon-close" aria-label="关闭" title="关闭">✕</button>
+    </header>
+
+    <div class="stage">
+      <div id="view-busy" class="view hidden">
+        <div class="spinner"><div class="ring"></div><div class="glow"></div></div>
+        <div id="busy-msg" class="msg">正在检查更新…</div>
+        <div id="busy-detail" class="detail"></div>
+        <div id="busy-progress" class="progress indeterminate hidden"><div class="bar"></div></div>
+      </div>
+
+      <div id="view-uptodate" class="view hidden">
+        <div class="status-icon ok">✓</div>
+        <div class="msg">已是最新版本</div>
+        <div id="uptodate-detail" class="detail"></div>
+        <div class="actions">
+          <button id="btn-uptodate-close" class="btn primary">好的</button>
+        </div>
+      </div>
+
+      <div id="view-available" class="view hidden">
+        <div class="status-icon info">↑</div>
+        <div class="msg">发现新版本</div>
+        <div class="ver-row">
+          <span id="av-cur" class="old"></span>
+          <span class="arrow">→</span>
+          <span id="av-latest" class="new"></span>
+        </div>
+        <div class="actions">
+          <button id="btn-later" class="btn">稍后</button>
+          <button id="btn-update" class="btn primary">立即更新</button>
+        </div>
+      </div>
+
+      <div id="view-done" class="view hidden">
+        <div class="status-icon ok">✓</div>
+        <div class="msg">更新完成</div>
+        <div id="done-detail" class="detail"></div>
+        <div class="actions">
+          <button id="btn-done-later" class="btn">稍后</button>
+          <button id="btn-restart" class="btn primary">立即重启</button>
+        </div>
+      </div>
+
+      <div id="view-error" class="view hidden">
+        <div class="status-icon err">✕</div>
+        <div class="msg">出错了</div>
+        <div id="error-detail" class="detail scroll"></div>
+        <div class="actions">
+          <button id="btn-close" class="btn">关闭</button>
+          <button id="btn-retry" class="btn primary">重试</button>
+        </div>
+      </div>
+    </div>
+
+    <footer>
+      <span class="lab">下载源</span>
+      <span class="src-group">
+        <button id="btn-src-toggle" class="src-toggle" aria-label="切换下载源" title="点击切换 npm 源">⇄</button>
+        <span id="foot-src" class="src" title="点击切换 npm 源"></span>
+      </span>
+    </footer>
+  </div>
+
+  <script>
+    (function () {
+      var views = {
+        busy: document.getElementById('view-busy'),
+        uptodate: document.getElementById('view-uptodate'),
+        available: document.getElementById('view-available'),
+        done: document.getElementById('view-done'),
+        error: document.getElementById('view-error')
+      };
+      var busyProgress = document.getElementById('busy-progress');
+      var busyBar = busyProgress.querySelector('.bar');
+
+      function show(name) {
+        Object.keys(views).forEach(function (k) {
+          views[k].classList.toggle('hidden', k !== name);
+        });
+      }
+      function text(id, value) { document.getElementById(id).textContent = value; }
+      function v(x) { return x ? 'v' + x : '—'; }
+
+      // 原来直接显示 registry 的完整 URL（如 registry.npmmirror.com），对不熟悉这些域名
+      // 的用户没意义；换成「服务商名 + 地域」，真实 URL 挪到 title 里点开才看。
+      function registryLabel(url) {
+        if (!url) return '';
+        if (url.indexOf('npmmirror') !== -1) return 'npmmirror（国内）';
+        if (url.indexOf('npmjs') !== -1) return 'npmjs（海外）';
+        return url;
+      }
+
+      function render(state) {
+        var p = state.phase || 'idle';
+        var footSrc = document.getElementById('foot-src');
+        footSrc.textContent = registryLabel(state.registry);
+        footSrc.title = (state.registry || '') + '（点击切换）';
+
+        if (p === 'checking') {
+          show('busy');
+          text('busy-msg', '正在检查更新…');
+          text('busy-detail', '');
+          busyProgress.classList.add('hidden');
+        } else if (p === 'downloading' || p === 'installing') {
+          show('busy');
+          text('busy-msg', p === 'downloading' ? '正在下载内核…' : '正在安装内核…');
+          text('busy-detail', (state.progress && state.progress.message) || ('目标版本 ' + v(state.latestVersion)));
+          if (state.progress && typeof state.progress.percent === 'number' && state.progress.percent >= 0) {
+            busyProgress.classList.remove('hidden', 'indeterminate');
+            busyBar.style.width = Math.max(0, Math.min(100, state.progress.percent)) + '%';
+          } else {
+            busyProgress.classList.add('indeterminate');
+            busyProgress.classList.remove('hidden');
+          }
+        } else if (p === 'available') {
+          show('available');
+          text('av-cur', v(state.currentVersion));
+          text('av-latest', v(state.latestVersion));
+        } else if (p === 'up-to-date') {
+          show('uptodate');
+          text('uptodate-detail', '当前内核 ' + v(state.currentVersion));
+        } else if (p === 'done') {
+          show('done');
+          text('done-detail', '已更新到 ' + v(state.latestVersion) + '，重启后生效');
+        } else if (p === 'error') {
+          show('error');
+          text('error-detail', state.error || '未知错误');
+        } else {
+          show('busy');
+        }
+      }
+
+      function bind(id, fn) {
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('click', fn);
+      }
+      bind('btn-update', function () { window.updater.startUpdate(); });
+      bind('btn-restart', function () { window.updater.restart(); });
+      bind('btn-retry', function () { window.updater.check(); });
+      bind('btn-later', function () { window.updater.close(); });
+      bind('btn-uptodate-close', function () { window.updater.close(); });
+      bind('btn-done-later', function () { window.updater.close(); });
+      bind('btn-close', function () { window.updater.close(); });
+      bind('btn-header-close', function () { window.updater.close(); });
+      bind('foot-src', function () { window.updater.cycleRegistry(); });
+      bind('btn-src-toggle', function () { window.updater.cycleRegistry(); });
+
+      if (window.updater && window.updater.onState) {
+        window.updater.onState(render);
+        window.updater.getState().then(render).catch(function () {});
+      }
+      // 首帧的主题已经由主进程通过 query string 定好了；这里只处理窗口复用场景——
+      // 弹窗隐藏后主界面换了主题，下次重新 show() 时要跟着刷新，而不是停在旧主题上。
+      if (window.updater && window.updater.onTheme) {
+        window.updater.onTheme(function (mode) {
+          document.documentElement.dataset.theme = mode === 'light' ? 'light' : 'dark';
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

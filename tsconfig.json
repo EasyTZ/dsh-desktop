@@ -1,0 +1,33 @@
+{
+  // 本项目不用 TypeScript 编译 —— 这份配置只做静态检查（noEmit）。
+  //
+  // 原因：主进程直接以 .js 打进 asar，electron-builder 的 files 就是 src/**，
+  // 「零构建步骤」是当前打包设计的承重墙。引入编译产物意味着要改打包链路、配
+  // sourcemap（否则崩溃堆栈全是编译后行号，排查体验反而变差）。用 checkJs +
+  // JSDoc 能拿到绝大部分类型收益，而打包链路一行都不用动。
+  //
+  // 用法：npm run typecheck
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023", "DOM"],
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": ["node"],
+    // 先开这两项：它们能抓到真正会炸的问题（拼错属性、参数个数不对、
+    // 可能为 null 的值直接解引用），又不会因为「没写类型标注」而刷屏。
+    "strictNullChecks": true,
+    "noImplicitAny": false,
+    "noImplicitThis": false,
+    // JS 项目里 catch (error) 后写 error?.message 是惯例；把 catch 变量当 unknown
+    // 只会逼出一堆无意义的类型断言。
+    "useUnknownInCatchVariables": false,
+    "noUnusedLocals": true
+  },
+  "include": ["src/**/*.js", "scripts/**/*.mjs", "test/**/*.js"],
+  "exclude": ["node_modules", "kernel", "dist", "release"]
+}

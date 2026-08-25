@@ -14,6 +14,11 @@ extraResources:
     to: kernel
     filter:
       - "**/*"
+  # 插件源码 + 清单：热更新新内核后，据此把自定义插件重装进新版内核。
+  - from: plugins
+    to: plugins
+    filter:
+      - "**/*"
   - from: build/icon.png
     to: icon.png
 asar: true
