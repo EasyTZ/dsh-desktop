@@ -58,8 +58,8 @@ README 原文：*"iterating rapidly. **THERE WILL BE COMPATIBILITY-BREAKING CHAN
 
 ### 已知偏离（待收敛）
 
-1. `src/preload/index.js` 用 `[class*="sidebarCol"]` 匹配 CSS-module 哈希类名定位侧边栏 —— 这是刮上游 DOM，属于 L3 该往 L2 挤的典型。已加 15s 探测时限（超时 `mo.disconnect()` 并经 `titlebar:sidebar-probe-failed` 让主进程记一行日志），泄漏和失联都不再无声，但耦合本身还在。
-2. 向上游提 slot PR（各 UI 包声明了几十个槽，但没有窗口 chrome 的），落地后标题栏从 L3 的 DOM 注入变成 L2 的客户端插件，上面那条连同 `trackSidebarWidth` 一起消失。
+1. `src/preload/index.js` 的自定义标题栏是**透明悬浮层**，不再用 `#root{padding-top}` 挤开页面布局，而是直接叠在 dsh 页面顶部（省掉了旧版本靠 `[class*="sidebarCol"]` 弱耦合匹配侧边栏、只为了伪装背景色这一层刮 DOM 的代码）。代价转移到了另一处：叠加区域整体是 `-webkit-app-region:drag`，如果 dsh 某个页面顶部 32px 内恰好有真实可点击内容，会被挡住点不到。目前只用一张欢迎页截图判断过顶部是空的，**没有跑遍 dsh 的其他页面**（活跃会话、设置页等）——按钮点不到多半是这个原因，需要针对那块加 `-webkit-app-region:no-drag` 例外，或退回「reserve 空间」的旧方案（`git log` 里能翻到 `src/preload/index.js` 改动前的版本）。
+2. 向上游提 slot PR（各 UI 包声明了几十个槽，但没有窗口 chrome 的），落地后标题栏从 L3 的 DOM 悬浮层变成 L2 的客户端插件，上面那条连同「叠加区域挡点击」的风险一起消失。
 
 ### 跨平台
 

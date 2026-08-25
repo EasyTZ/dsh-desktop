@@ -13,7 +13,7 @@ const { summarizeStderr } = require('../shared/error-detail');
 const { showUpdaterWindow, hideUpdaterWindow, destroyUpdaterWindow } = require('./updater-window');
 
 const APP_ID = 'com.deepseek.desktop';
-const ISSUES_URL = 'https://github.com/EasyTZ/Deepseek-Harness-Desktop/issues';
+const ISSUES_URL = 'https://github.com/EasyTZ/Deepseek-Harness-Desktop/issues/new/choose';
 const gotLock = app.requestSingleInstanceLock();
 
 if (!gotLock) {
@@ -358,14 +358,6 @@ if (!gotLock) {
       }).catch(() => {});
     }, 8000);
   };
-
-  // 预留的无边框窗口控制通道（当前原生边框下为空操作）。
-  // 标题栏没能定位到 dsh 侧边栏：多半是上游改了那个 CSS Modules 类名。日志里
-  // 上面就是 `[dsh] 内核: ...` 那一行，两条一起看就知道是哪个内核版本改的。
-  ipcMain.on('titlebar:sidebar-probe-failed', (_e, timeoutMs) => {
-    console.warn(`[titlebar] ${timeoutMs}ms 内未匹配到 dsh 侧边栏（[class*="sidebarCol"]），`
-      + '标题栏左段宽度将保持默认。上游可能已改动该类名。');
-  });
 
   ipcMain.on('window:minimize', () => win && win.minimize());
   ipcMain.on('window:maximize', () => win && (win.isMaximized() ? win.unmaximize() : win.maximize()));
