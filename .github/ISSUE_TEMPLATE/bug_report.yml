@@ -1,0 +1,59 @@
+name: 问题反馈
+description: 客户端崩溃、启动失败、显示异常等使用中遇到的问题
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: 发生了什么
+      description: 描述现象，以及你期望的结果是什么
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 尽量写清楚从打开客户端到出问题的每一步，方便定位
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: install-type
+    attributes:
+      label: 安装方式
+      options:
+        - 安装包（Setup.exe）
+        - 绿色版（Portable.zip）
+    validations:
+      required: true
+
+  - type: input
+    id: app-version
+    attributes:
+      label: 客户端版本
+      description: 见 Releases 页面下载的文件名，或托盘菜单「检查内核更新」旁能看到内核版本
+      placeholder: 例如 v1.2.0
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: Windows 版本
+      placeholder: 例如 Windows 11 24H2
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 错误信息 / 日志
+      description: 如果弹出了错误框，把里面的摘要文字贴上来；没有的话可以留空
+      render: text
+    validations:
+      required: false

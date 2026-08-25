@@ -13,6 +13,7 @@ const { summarizeStderr } = require('../shared/error-detail');
 const { showUpdaterWindow, hideUpdaterWindow, destroyUpdaterWindow } = require('./updater-window');
 
 const APP_ID = 'com.deepseek.desktop';
+const ISSUES_URL = 'https://github.com/EasyTZ/Deepseek-Harness-Desktop/issues';
 const gotLock = app.requestSingleInstanceLock();
 
 if (!gotLock) {
@@ -227,6 +228,7 @@ if (!gotLock) {
             onShow: toggleWindow,
             onQuit: quitApp,
             onCheckUpdate: openUpdater,
+            onFeedback: openFeedback,
             kernelVersion: updater ? updater.getCurrentVersion() : null,
           });
         }
@@ -318,6 +320,7 @@ if (!gotLock) {
         onShow: toggleWindow,
         onQuit: quitApp,
         onCheckUpdate: openUpdater,
+        onFeedback: openFeedback,
         kernelVersion: state.currentVersion,
       }));
     });
@@ -334,6 +337,10 @@ if (!gotLock) {
     if (!updater) return;
     showUpdaterWindow({ updater, mainWindow: win });
     updater.check().catch((err) => console.error('[app] 检查更新失败:', err));
+  };
+
+  const openFeedback = () => {
+    shell.openExternal(ISSUES_URL).catch((err) => console.error('[app] 打开反馈页面失败:', err));
   };
 
   // 启动后延迟自动检查：距上次检查超过 24h 才请求。发现新版本才弹更新中心

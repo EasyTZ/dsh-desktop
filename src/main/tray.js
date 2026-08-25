@@ -14,20 +14,21 @@ function checkUpdateLabel(kernelVersion) {
 
 /**
  * 构造托盘菜单。单独导出是为了内核更新完成后能重建菜单、刷新版本号。
- * @param {{onShow: () => void, onQuit: () => void, onCheckUpdate: () => void, kernelVersion?: string|null}} opts
+ * @param {{onShow: () => void, onQuit: () => void, onCheckUpdate: () => void, onFeedback: () => void, kernelVersion?: string|null}} opts
  */
-function buildTrayMenu({ onShow, onQuit, onCheckUpdate, kernelVersion }) {
+function buildTrayMenu({ onShow, onQuit, onCheckUpdate, onFeedback, kernelVersion }) {
   return Menu.buildFromTemplate([
     { label: '显示 / 隐藏', click: onShow },
     { type: 'separator' },
     { label: checkUpdateLabel(kernelVersion), click: onCheckUpdate },
+    { label: '反馈问题', click: onFeedback },
     { type: 'separator' },
     { label: '退出', click: onQuit },
   ]);
 }
 
 /**
- * @param {{onShow: () => void, onQuit: () => void, onCheckUpdate: () => void, kernelVersion?: string|null}} opts
+ * @param {{onShow: () => void, onQuit: () => void, onCheckUpdate: () => void, onFeedback: () => void, kernelVersion?: string|null}} opts
  */
 function createTray(opts) {
   const icon = iconPath();
