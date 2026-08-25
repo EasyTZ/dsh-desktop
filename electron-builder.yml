@@ -1,6 +1,6 @@
 appId: com.deepseek.desktop
 productName: DeepSeek Harness Desktop
-copyright: Copyright © 2026 deepseek-desktop
+copyright: Copyright © 2026 EasyTZ
 # 无生产依赖：依赖由外部处理，跳过 install/rebuild 与 node_modules 收集。
 beforeBuild: scripts/before-build.js
 directories:

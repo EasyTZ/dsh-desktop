@@ -8,6 +8,11 @@
   <a href="https://github.com/EasyTZ/Deepseek-Harness-Desktop/releases/latest"><b>⬇️ 下载最新版</b></a>
 </p>
 
+<p align="center">
+  <sub>浅色主题：</sub><br>
+  <img src="docs/screenshot-light.png" alt="浅色主题" width="640">
+</p>
+
 ---
 
 ## ✨ 亮点
@@ -39,7 +44,11 @@
 
 **第一次启动**：双击图标后会先出现启动窗口（logo + 加载动画），几秒后自动进入主界面 —— 这是程序在后台拉起本地服务，属正常现象。
 
-**填 API Key（必做）**：点左下角齿轮 → 打开「模型 / Models」→ 填入 DeepSeek API Key（形如 `sk-xxxx`，在 [platform.deepseek.com](https://platform.deepseek.com) 申请）→ 保存。不填也能打开界面，但一发消息就会失败。
+**填 API Key（必做）**：点左下角齿轮 → 打开「模型」→ 填入 DeepSeek API Key（形如 `sk-xxxx`，在 [platform.deepseek.com](https://platform.deepseek.com) 申请）→ 保存。不填也能打开界面，但一发消息就会失败。
+
+<p align="center">
+  <img src="docs/settings-api.png" alt="API Key 设置页面" width="560">
+</p>
 
 **日常使用**：
 
@@ -87,7 +96,7 @@
 
 ## 📝 更新日志
 
-**最新版 v1.2.0** —— 修复「装了新版客户端、内核还是旧的」；出厂内核升级到 dsh `0.1.1-rc.2`；插件改用 dsh 官方机制接入，内核升级后不再失效；修复内核回退时的十几秒卡顿。
+**最新版 v1.2.1** —— 标题栏改为悬浮叠加，界面顶部不再留一大块空白；更新弹窗视觉优化，主题色随浅色/深色自动切换；新增 GitHub Issue 模板与托盘反馈入口，报问题更方便。
 
 完整历史见 [Releases](https://github.com/EasyTZ/Deepseek-Harness-Desktop/releases)。
 
