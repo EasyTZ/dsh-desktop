@@ -7,12 +7,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/EasyTZ/Deepseek-Harness-Desktop/releases/latest"><b>⬇️ 下载最新版</b></a>
+  <sub>浅色主题：</sub><br>
+  <img src="docs/screenshot-light.png" alt="浅色主题" width="800">
 </p>
 
 <p align="center">
-  <sub>浅色主题：</sub><br>
-  <img src="docs/screenshot-light.png" alt="浅色主题" width="800">
+  <a href="https://github.com/EasyTZ/Deepseek-Harness-Desktop/releases/latest"><b>⬇️ 下载最新版</b></a>
 </p>
 
 ---
