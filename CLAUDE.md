@@ -79,7 +79,7 @@ npm test                 # 单元测试（node:test 内置，零第三方依赖�
 npm run typecheck        # tsc --checkJs 静态检查（noEmit，不产出编译结果）
 npm run install-plugin   # 把 plugins/ 下的自定义插件装进「本机全局 dsh」
 npm run prepare-kernel   # 复制 node.exe + pnpm + 全局 dsh 依赖树到 kernel/
-npm run dist             # prepare-kernel → electron-builder --win → collect-release
+npm run dist             # install-plugin → prepare-kernel → electron-builder --win → collect-release
 npm run dist:dir         # 同上但只出 win-unpacked（快速验证打包态）
 npm run icon             # 仅在改了 build/logo.svg 后重新生成 icon.png/ico
 ```
@@ -88,7 +88,7 @@ npm run icon             # 仅在改了 build/logo.svg 后重新生成 icon.png/
 
 打包机前置：Node ≥ 22、`npm i -g @deepseek-ai/dsh`、`npm i -g pnpm`。
 
-**顺序很重要**：`install-plugin` 必须先于 `prepare-kernel`。`prepare-kernel` 是整目录 `cpSync` 全局 dsh 安装目录，插件源码与依赖登记是搭便车进入内核的；顺序反了产物里就没有插件。同理，每次 `npm i -g @deepseek-ai/dsh` 升级后都要重跑 `install-plugin`，否则改动被覆盖。
+**顺序很重要**：`install-plugin` 必须先于 `prepare-kernel`。`prepare-kernel` 是整目录 `cpSync` 全局 dsh 安装目录，插件源码与依赖登记是搭便车进入内核的；顺序反了产物里就没有插件。`dist` / `dist:dir` 已经把 `install-plugin` 串在最前面，靠脚本本身保证顺序，不用再靠人记住——单独跑 `prepare-kernel` 或手动分步操作时仍需自己注意这条。同理，每次 `npm i -g @deepseek-ai/dsh` 升级后都要重跑 `install-plugin`（这也是为什么 `dist` 每次都无条件带上它，而不是假设「上次装过就还在」）。
 
 （激活条目不再搭这趟车 —— 它由启动时的 `--patch` overlay 提供。）
 

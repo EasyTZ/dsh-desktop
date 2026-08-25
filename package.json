@@ -13,8 +13,8 @@
     "icon": "node scripts/gen-icon.mjs",
     "install-plugin": "node scripts/install-plugin.mjs",
     "prepare-kernel": "node scripts/prepare-kernel.mjs",
-    "dist": "node scripts/prepare-kernel.mjs && electron-builder --win && node scripts/collect-release.mjs",
-    "dist:dir": "node scripts/prepare-kernel.mjs && electron-builder --win --dir"
+    "dist": "node scripts/install-plugin.mjs && node scripts/prepare-kernel.mjs && electron-builder --win && node scripts/collect-release.mjs",
+    "dist:dir": "node scripts/install-plugin.mjs && node scripts/prepare-kernel.mjs && electron-builder --win --dir"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
