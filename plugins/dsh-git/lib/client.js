@@ -35,6 +35,8 @@ window.__ModuleLoader__.load({
 			"git.section.empty": "没有变更",
 			"git.section.history": "最近提交",
 			"git.history.empty": "暂无提交记录",
+			"git.history.more": "展开更早的 {n} 条",
+			"git.history.less": "收起",
 			"git.action.stage": "暂存此文件",
 			"git.action.unstage": "取消暂存此文件",
 			"git.commit.placeholder": "提交信息",
@@ -81,6 +83,8 @@ window.__ModuleLoader__.load({
 			"git.section.empty": "No changes",
 			"git.section.history": "Recent Commits",
 			"git.history.empty": "No commits yet",
+			"git.history.more": "Show {n} older",
+			"git.history.less": "Show less",
 			"git.action.stage": "Stage this file",
 			"git.action.unstage": "Unstage this file",
 			"git.commit.placeholder": "Commit message",
@@ -118,14 +122,32 @@ window.__ModuleLoader__.load({
 			// translateY(-50%) 垂直居中，动画只叠加同一个 transform 里的位移分量，
 			// 跟居中不冲突。挂载后常驻 DOM（见 GitPanel），开关只切 dsgOpen 这个
 			// class，这样关闭时也能把内容一起淡出，而不是瞬间抽掉再空盒子飘走。
-			".dsgPanel{position:fixed;top:50%;right:20px;z-index:2;width:420px;max-width:92vw;height:min(760px,88vh);display:flex;flex-direction:column;background:var(--dsw-alias-bg-overlay,#1b1b1c);border-radius:14px;box-shadow:0 16px 48px rgba(0,0,0,.32);color:var(--dsw-alias-label-primary,#f9fafb);font-size:13px;overflow:hidden;" +
+			".dsgPanel{position:fixed;top:50%;right:20px;z-index:2;width:420px;max-width:92vw;height:min(760px,88vh);display:flex;flex-direction:column;padding-bottom:32px;background:var(--dsw-alias-bg-overlay,#1b1b1c);border-radius:14px;box-shadow:0 16px 48px rgba(0,0,0,.32);color:var(--dsw-alias-label-primary,#f9fafb);font-size:13px;overflow:hidden;" +
 			"opacity:0;pointer-events:none;transform:translateY(-50%) translateX(12px) scale(.98);transition:opacity .16s ease,transform .16s ease}",
 			".dsgPanel.dsgOpen{opacity:1;pointer-events:auto;transform:translateY(-50%) translateX(0) scale(1)}",
 			".dsgHeader{flex:none;display:flex;align-items:center;gap:6px;padding:12px 12px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.06))}",
 			".dsgHeaderTitle{font-weight:600;font-size:14px;margin-right:auto}",
 			".dsgIconBtn{flex:none;width:26px;height:26px;border:none;border-radius:7px;background:transparent;color:var(--dsw-alias-label-secondary,#cfd3d6);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:background .15s ease,color .15s ease}",
 			".dsgIconBtn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#f9fafb)}",
-			".dsgBody{flex:1;min-height:0;overflow-y:auto;padding:10px 12px 16px}",
+			// 底部留白分两层，因为滚动容器里**只有一层是做不到的**：
+			//   · 面板本体的 padding-bottom（上面那条 32px）在滚动区**之外**，它就是「底部
+			//     留白」这个观感的唯一旋钮 —— 想调宽窄改这一个数即可，内容永远
+			//     进不去 —— 这才是「不管滚没滚，底部都有边距」；把它写在 .dsgBody 上
+			//     没用，滚动容器的 padding 只在滚到尽头时才显形。
+			//   · .dsgBody 自己再留 6px，跟上面那条叠加成滚到尽头时的呼吸量。
+			// 再盖一层到底色的渐变：没滚到底时内容是被容器边缘切断的，让它淡出而不是
+			// 齐刷刷断掉。bottom 对齐到滚动区下沿（14px，即那条实体空白之上），
+			// pointer-events:none，不挡点击与滚轮。
+			".dsgBody{flex:1;min-height:0;overflow-y:auto;padding:10px 12px 6px}",
+			".dsgBodyFade{position:absolute;left:0;right:0;bottom:32px;height:18px;pointer-events:none;background:linear-gradient(to bottom,transparent,var(--dsw-alias-bg-overlay,#1b1b1c))}",
+			// 折叠动画。height:auto 没法直接过渡，这里用 grid 的 0fr → 1fr —— 它能对
+			// 「内容有多高就多高」做真正的插值，不用像 max-height 那样猜一个大值
+			// （猜小了截断、猜大了动画前后半段一顿一顿）。内层必须 overflow:hidden
+			// 且 min-height:0，否则内容不会被行高裁剪，动画就没了。
+			".dsgCollapsible{display:grid;grid-template-rows:0fr;transition:grid-template-rows .16s ease-out;will-change:grid-template-rows}",
+			".dsgCollapsible.dsgCollapsibleOpen{grid-template-rows:1fr}",
+			".dsgCollapsibleInner{overflow:hidden;min-height:0;contain:layout paint;transition:opacity .12s ease-out;opacity:0}",
+			".dsgCollapsibleOpen > .dsgCollapsibleInner{opacity:1}",
 			".dsgWorkspaceRow{margin-bottom:10px;position:relative}",
 			".dsgBranchRow{display:flex;align-items:center;gap:6px;margin-bottom:12px;font-size:12.5px;color:var(--dsw-alias-label-secondary,#cfd3d6);position:relative}",
 			".dsgBranchRow svg{flex:none;color:var(--dsw-alias-label-tertiary,#8b949e)}",
@@ -176,23 +198,43 @@ window.__ModuleLoader__.load({
 			".dsgCommitFooter{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:8px}",
 			".dsgCommitResult{font-size:12px;color:var(--dsw-alias-state-success-primary,#3fb950)}",
 			".dsgCommitBtn{height:30px;padding:0 16px;border:none;border-radius:8px;background:var(--dsw-alias-button-primary-fill,#4d6bfe);color:var(--dsw-alias-label-primary-inverted,#fff);font-size:12.5px;font-weight:600;font-family:inherit;cursor:pointer;transition:background .15s ease,opacity .15s ease}",
-			// 推送是次级动作：描边按钮，跟实心的提交拉开层级，两个都常驻也不会打架。
-			".dsgCommitBtnSecondary{background:transparent;border:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.14));color:var(--dsw-alias-label-primary,#f9fafb)}",
-			".dsgCommitBtnSecondary:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}",
 			".dsgCommitBtn:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover,#5a77ff)}",
 			".dsgCommitBtn:disabled{opacity:.45;cursor:default}",
+			// 推送是次级动作。三条都是踩过的坑，改动前先读完：
+			//
+			// 1) 这几条**必须排在 .dsgCommitBtn:hover 之后**。次级按钮同时挂着两个
+			//    class，特异性一样，同特异性下后写的赢——原来排在前面，于是悬浮时
+			//    套上了主按钮的 hover 底色，深色主题下实测变成浅底 + 近白字，字直接
+			//    看不见了。
+			// 2) 底色用**中性灰半透明**，不用任何 bg-* token。先试过 transparent（深色下
+			//    就是面板底色本身，糊成一片），再试过 bg-layer-2（深色下确实亮一档，
+			//    但浅色主题里它和面板底 bg-overlay 几乎是同一个白，照样看不清）。
+			//    根子在于：这两个 token 的明暗关系随主题翻转，靠它们做对比就得写两套。
+			//    而中等灰对纯白和近黑**都有对比**，一个值通吃两个主题，边框同理。
+			// 3) hover 态显式重申 color，不能靠继承——一旦别处的规则改了文字色，
+			//    这里就会重演「底白字白」。
+			".dsgCommitBtnSecondary{background:rgba(128,128,128,.16);border:1px solid rgba(128,128,128,.5);color:var(--dsw-alias-label-primary,#f9fafb)}",
+			".dsgCommitBtnSecondary:hover:not(:disabled){background:rgba(128,128,128,.3);border-color:rgba(128,128,128,.78);color:var(--dsw-alias-label-primary,#f9fafb)}",
+			// 禁用态必须自己写一份，不能吃上面 .dsgCommitBtn:disabled 的 opacity:.45 ——
+			// 那会把**边框也一起冲淡**（.5 的描边变成 .22），描边按钮的边界就没了，
+			// 表现就是「没东西可推的时候按钮看不出轮廓」。改成：轮廓保持清晰、
+			// 只把文字压到 tertiary 来表达不可用。这条要排在 .dsgCommitBtn:disabled
+			// 之后才生效（同特异性，后写的赢）。
+			".dsgCommitBtnSecondary:disabled{opacity:1;background:rgba(128,128,128,.07);border-color:rgba(128,128,128,.45);color:var(--dsw-alias-label-tertiary,#8b949e);cursor:default}",
 			".dsgHistoryRow{padding:6px 4px;border-radius:6px}",
 			".dsgHistoryRow:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}",
 			".dsgHistoryTop{display:flex;align-items:baseline;gap:8px}",
 			".dsgHistoryHash{flex:none;font-family:ui-monospace,monospace;font-size:11.5px;color:var(--dsw-alias-label-tertiary,#8b949e)}",
 			".dsgHistorySubject{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary,#f9fafb)}",
+			".dsgHistoryMore{display:block;width:100%;margin-top:4px;padding:5px 4px;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-tertiary,#8b949e);font-size:11.5px;font-family:inherit;cursor:pointer}",
+			".dsgHistoryMore:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06));color:var(--dsw-alias-label-secondary,#cfd3d6)}",
 			".dsgHistoryMeta{font-size:11px;color:var(--dsw-alias-label-tertiary,#8b949e);margin-top:2px}",
-			// 提交的推送状态：用户反馈「看不出哪些提交推过了」。未推送的用强调色实心点
-			// + 文字，已推送的用弱化的空心点 —— 未推送是**需要用户行动**的状态，
-			// 必须比已推送显眼，光靠灰度差分不出来。
-			".dsgPushState{flex:none;display:inline-flex;align-items:center;gap:4px;font-size:10.5px;line-height:1;padding:2px 6px;border-radius:999px;white-space:nowrap}",
-			".dsgPushStateUnpushed{color:var(--dsw-alias-state-warn-primary,#e3a008);background:var(--dsw-alias-state-warn-bg,rgba(227,160,8,.12))}",
-			".dsgPushStatePushed{color:var(--dsw-alias-label-tertiary,#8b949e)}",
+			// 提交的推送状态：已推送 = 实心圆 + 绿色（这件事已经了结），未推送 = 空心圆
+			// + 黄色（还悬着、等你推）。圆的虚实与颜色两条线索同时表达同一件事，
+			// 色觉障碍的人靠实心/空心也能分。
+			".dsgPushState{flex:none;display:inline-flex;align-items:center;gap:4px;font-size:10.5px;line-height:1;white-space:nowrap}",
+			".dsgPushStatePushed{color:var(--dsw-alias-state-success-primary,#3fb950)}",
+			".dsgPushStateUnpushed{color:var(--dsw-alias-state-warn-primary,#e3a008)}",
 			// 变更区可折叠：issue 里提到「更改文件的查看优先级不用那么高」。折叠头是
 			// 整行可点的按钮，右侧是文件总数。
 			".dsgCollapseHead{display:flex;align-items:center;gap:6px;width:100%;padding:4px 4px;margin-bottom:6px;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-tertiary,#8b949e);font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.03em;font-family:inherit;cursor:pointer;text-align:left}",
@@ -523,12 +565,21 @@ window.__ModuleLoader__.load({
 			});
 		}
 
+		/** 已推送的提交默认只露这么多条，剩下的收进可展开区（展开后带滚动）。 */
+		const PUSHED_PREVIEW = 5;
+
 		function HistorySection({ t, commits, onUndo, undoing, unpushedCount = 0 }) {
-			return react_jsx_runtime.jsxs("div", { className: "dsgSection", children: [
-				react_jsx_runtime.jsx("div", { className: "dsgSectionTitle", children: react_jsx_runtime.jsx("span", { children: t("git.section.history") }) }),
-				commits.length === 0
-					? react_jsx_runtime.jsx("div", { className: "dsgEmpty", children: t("git.history.empty") })
-					: commits.map((c, index) => {
+			const [showAllPushed, setShowAllPushed] = react.useState(false);
+			// 未推送的全露出来——那是还等着你处理的；已推送的属于「已经了结」，
+			// 默认只留最近 5 条，再多就收起来，免得历史把面板撑成一条长清单。
+			const unpushedList = commits.slice(0, unpushedCount);
+			const pushedList = commits.slice(unpushedCount);
+			const previewPushed = pushedList.slice(0, PUSHED_PREVIEW);
+			const restPushed = pushedList.slice(PUSHED_PREVIEW);
+			const hiddenPushed = restPushed.length;
+
+			/** @param {any} c @param {number} index 在整个 commits 里的下标（撤销按钮只认第 0 条） */
+			const renderRow = (c, index) => {
 						// 前 unpushedCount 条是还没推上去的（git log 倒序）。这条状态原来
 						// 完全看不出来，用户反馈「分不清哪些提交推过了」（issue #1）。
 						const unpushed = index < unpushedCount;
@@ -542,14 +593,45 @@ window.__ModuleLoader__.load({
 								react_jsx_runtime.jsxs("span", {
 									className: "dsgPushState " + (unpushed ? "dsgPushStateUnpushed" : "dsgPushStatePushed"),
 									children: [
-										react_jsx_runtime.jsx("span", { children: unpushed ? "●" : "○" }),
+										react_jsx_runtime.jsx("span", { children: unpushed ? "○" : "●" }),
 										react_jsx_runtime.jsx("span", { children: unpushed ? t("git.history.unpushed") : t("git.history.pushed") })
 									]
 								}),
 								react_jsx_runtime.jsx("span", { children: ` ${c.author} · ${formatDate(c.date)}` })
 							] })
 						] }, c.hash);
-					})
+			};
+
+			return react_jsx_runtime.jsxs("div", { className: "dsgSection", children: [
+				react_jsx_runtime.jsx("div", { className: "dsgSectionTitle", children: react_jsx_runtime.jsx("span", { children: t("git.section.history") }) }),
+				commits.length === 0
+					? react_jsx_runtime.jsx("div", { className: "dsgEmpty", children: t("git.history.empty") })
+					: react_jsx_runtime.jsxs(react_jsx_runtime.Fragment, { children: [
+						unpushedList.map((c, i) => renderRow(c, i)),
+						// 常显的前几条已推送。
+						react_jsx_runtime.jsx("div", {
+							children: previewPushed.map((c, i) => renderRow(c, unpushedCount + i))
+						}),
+						// 更早的那些常驻挂载、只切 class，才能有展开动画（同变更区）。
+						// 这里**不加内层滚动**：曾经给过 max-height:220px，结果是没有变更时
+						// 面板下方空一大片、展开区却挤在那 220px 里滚。面板 body 本身可滚，
+						// 让内容顺着往下铺由它统一滚，既吃满高度，也免掉嵌套滚动。
+						hiddenPushed > 0 ? react_jsx_runtime.jsx("div", {
+							className: "dsgCollapsible" + (showAllPushed ? " dsgCollapsibleOpen" : ""),
+							children: react_jsx_runtime.jsx("div", {
+								className: "dsgCollapsibleInner",
+								children: restPushed.map((c, i) => renderRow(c, unpushedCount + PUSHED_PREVIEW + i))
+							})
+						}) : null,
+						hiddenPushed > 0 ? react_jsx_runtime.jsx("button", {
+							type: "button",
+							className: "dsgHistoryMore",
+							onClick: () => setShowAllPushed(!showAllPushed),
+							children: showAllPushed
+								? t("git.history.less")
+								: t("git.history.more").replace("{n}", String(hiddenPushed))
+						}) : null
+					] })
 			] });
 		}
 
@@ -587,10 +669,10 @@ window.__ModuleLoader__.load({
 
 			const [view, setView] = react.useState({ status: "idle", error: null, data: null, commits: [], branches: [] });
 			const [message, setMessage] = react.useState("");
-			// 变更列表默认折叠（issue #1：它的查看优先级不该高过提交本身），但记住
-			// 用户的选择 —— 想边看边挑文件暂存的人，不该每次打开面板都再点一次。
+			// 变更列表**默认展开**：它是提交前最需要扫一眼的东西。折叠能力保留（提交框
+			// 已经移到它上面，长列表不会再把提交挤下去），并记住用户的选择。
 			const [changesOpen, setChangesOpenState] = react.useState(() => {
-				try { return localStorage.getItem("dsg:changesOpen") === "1"; } catch { return false; }
+				try { return localStorage.getItem("dsg:changesOpen") !== "0"; } catch { return true; }
 			});
 			const setChangesOpen = (next) => {
 				setChangesOpenState(next);
@@ -835,11 +917,16 @@ window.__ModuleLoader__.load({
 									react_jsx_runtime.jsx("span", { className: "dsgCollapseCount", children: changeCount })
 								]
 							}),
-							changesOpen ? react_jsx_runtime.jsxs(react_jsx_runtime.Fragment, { children: [
-								react_jsx_runtime.jsx(FileSection, { title: t("git.section.staged"), entries: staged, mode: "staged", onAction: onUnstage, t }),
-								react_jsx_runtime.jsx(FileSection, { title: t("git.section.unstaged"), entries: unstaged, mode: "unstaged", onAction: onStage, t }),
-								react_jsx_runtime.jsx(FileSection, { title: t("git.section.untracked"), entries: untracked, mode: "untracked", onAction: onStage, t })
-							] }) : null
+							// 常驻挂载、只切 class：条件渲染的话元素是瞬间出现/消失的，
+							// 没有可过渡的中间态，动画无从谈起。
+							react_jsx_runtime.jsx("div", {
+								className: "dsgCollapsible" + (changesOpen ? " dsgCollapsibleOpen" : ""),
+								children: react_jsx_runtime.jsxs("div", { className: "dsgCollapsibleInner", children: [
+									react_jsx_runtime.jsx(FileSection, { title: t("git.section.staged"), entries: staged, mode: "staged", onAction: onUnstage, t }),
+									react_jsx_runtime.jsx(FileSection, { title: t("git.section.unstaged"), entries: unstaged, mode: "unstaged", onAction: onStage, t }),
+									react_jsx_runtime.jsx(FileSection, { title: t("git.section.untracked"), entries: untracked, mode: "untracked", onAction: onStage, t })
+								] })
+							})
 						] }) : null,
 
 						react_jsx_runtime.jsx(HistorySection, {
@@ -850,7 +937,10 @@ window.__ModuleLoader__.load({
 							hasUpstream: data.hasUpstream
 						})
 					] }) : null
-				] })
+				] }),
+				// 底部渐隐：盖在滚动区之上、面板之内，让没滚到底时的内容淡出而不是被
+				// 齐刷刷切断。放在 body 之后（同层后写的盖在上面），不参与布局。
+				react_jsx_runtime.jsx("div", { className: "dsgBodyFade" })
 			] });
 		}
 

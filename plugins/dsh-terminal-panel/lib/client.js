@@ -17,6 +17,7 @@ window.__ModuleLoader__.load({
 			"terminal.tab.close": "关闭标签",
 			"terminal.tab.maxReached": "标签数量已达上限（8 个）",
 			"terminal.empty.noTabs": "还没有终端标签，点击右上角 + 新建",
+			"terminal.empty.noWorkspace": "还没有打开工作区。打开一个工作区后，这里会自动为它开一个终端。",
 			"terminal.empty.title": "在这里执行命令，输出会实时显示。",
 			"terminal.empty.shell.pwsh": "当前 shell：pwsh（不加载 PowerShell 配置文件）",
 			"terminal.empty.shell.bash": "当前 shell：bash（不是 zsh，且不加载 .bashrc）",
@@ -43,6 +44,7 @@ window.__ModuleLoader__.load({
 			"terminal.tab.close": "Close tab",
 			"terminal.tab.maxReached": "Tab limit reached (8)",
 			"terminal.empty.noTabs": "No terminal tabs yet — click + in the header to create one",
+			"terminal.empty.noWorkspace": "No workspace open yet. Open one and a terminal will be created for it automatically.",
 			"terminal.empty.title": "Run commands here; output streams in real time.",
 			"terminal.empty.shell.pwsh": "Current shell: pwsh (PowerShell profile is not loaded)",
 			"terminal.empty.shell.bash": "Current shell: bash (not zsh, and .bashrc is not loaded)",
@@ -100,9 +102,16 @@ window.__ModuleLoader__.load({
 			".dstIconBtn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#f9fafb)}",
 			// —— tabs 32px ——
 			".dstTabs{flex:none;display:flex;align-items:center;gap:4px;height:32px;padding:0 8px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.06));overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}",
-			".dstTab{flex:none;display:inline-flex;align-items:center;gap:6px;max-width:220px;height:24px;padding:0 8px;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#cfd3d6);font-size:12px;font-family:inherit;cursor:pointer;transition:background .15s ease,color .15s ease}",
-			".dstTab:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}",
-			".dstTabActive{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.1));color:var(--dsw-alias-label-primary,#f9fafb)}",
+			// 标签同样不能用 transparent 底 + interactive-bg-hover 这套：前者就是面板
+			// 底色本身（完全没有边界），后者是个很淡的叠加层，浅色主题下几乎看不见，
+			// 而且它跟 hover 用的是同一个 token —— 激活态和悬浮态还分不开。
+			// 改成中性灰描边（对纯白与近黑都有对比，一个值通吃两个主题），激活态再
+			// 叠一圈强调色边框 + 更深的填充，三种状态（普通/悬浮/激活）互不混淆。
+			// box-sizing 必须显式写：给原本 border:none 的定高元素加边框会把高度撑大。
+			".dstTab{flex:none;box-sizing:border-box;display:inline-flex;align-items:center;gap:6px;max-width:220px;height:24px;padding:0 8px;border:1px solid rgba(128,128,128,.32);border-radius:6px;background:rgba(128,128,128,.12);color:var(--dsw-alias-label-secondary,#cfd3d6);font-size:12px;font-family:inherit;cursor:pointer;transition:background .15s ease,color .15s ease,border-color .15s ease}",
+			".dstTab:hover{background:rgba(128,128,128,.24);border-color:rgba(128,128,128,.55)}",
+			".dstTabActive{background:rgba(128,128,128,.34);border-color:#0550ae;color:var(--dsw-alias-label-primary,#f9fafb)}",
+			".dstDark .dstTabActive{border-color:#6cb6ff}",
 			".dstTabDot{flex:none;font-size:8px;color:var(--dsw-alias-label-tertiary,#8b949e)}",
 			".dstTabActive .dstTabDot{color:var(--dsw-alias-state-success-primary,#3fb950)}",
 			".dstTabRunning .dstTabDot{color:var(--dsw-alias-state-warn-primary,#e3a008)}",
@@ -140,11 +149,20 @@ window.__ModuleLoader__.load({
 			".dstWaitingHint{flex:none;padding:6px 12px;background:var(--dsw-alias-bg-layer-2,#232326);color:var(--dsw-alias-state-warn-primary,#e3a008);font-size:12px;line-height:1.5;border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.06))}",
 			// —— 状态栏 26px ——
 			".dstStatusBar{flex:none;display:flex;align-items:center;gap:8px;height:26px;padding:0 12px;border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.06));font-size:11.5px;color:var(--dsw-alias-label-secondary,#cfd3d6)}",
-			".dstStatusCwd{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+			// 当前路径：整条用强调色，shell 名保持弱化。强调色深浅主题各取一个
+			// （浅色深蓝 / 深色亮蓝，都来自面板里已有的 Primer 调色板），比直接上
+			// 纯白或纯黑克制，也不会在任一主题下糊进底色。
+			".dstStatusCwd{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}",
+			".dstStatusShell{color:var(--dsw-alias-label-tertiary,#8b949e)}",
+			".dstStatusPath{font-weight:600;color:#0550ae}",
+			".dstDark .dstStatusPath{color:#6cb6ff}",
 			".dstStatusRight{flex:none;display:inline-flex;align-items:center;gap:6px;color:var(--dsw-alias-state-warn-primary,#e3a008)}",
 			// 停止按钮：命令运行中可见（可发现性，不依赖用户记得 Ctrl+C），hover 变红
 			// 表示这是危险操作。
-			".dstStopBtn{flex:none;display:inline-flex;align-items:center;justify-content:center;height:20px;padding:0 8px;border:none;border-radius:5px;background:var(--dsw-alias-bg-layer-2,#232326);color:var(--dsw-alias-label-secondary,#cfd3d6);font-size:11px;font-family:inherit;cursor:pointer;transition:background .15s ease,color .15s ease}",
+			// 底色用中性灰半透明而不是 bg-layer-2：后者在深色下比面板底亮一档没问题，
+			// 但浅色主题里它跟面板底几乎是同一个白，按钮就糊进背景了（Git 面板的推送
+			// 按钮踩过这个坑）。中等灰对纯白和近黑都有对比，一个值通吃两个主题。
+			".dstStopBtn{flex:none;display:inline-flex;align-items:center;justify-content:center;height:20px;padding:0 8px;border:1px solid rgba(128,128,128,.5);border-radius:5px;background:rgba(128,128,128,.16);color:var(--dsw-alias-label-secondary,#cfd3d6);font-size:11px;font-family:inherit;cursor:pointer;transition:background .15s ease,color .15s ease,border-color .15s ease}",
 			".dstStopBtn:hover{background:var(--dsw-alias-state-error-primary,#f0617a);color:var(--dsw-alias-label-primary-inverted,#fff)}",
 			".dstSpinner{width:11px;height:11px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:dstSpin .8s linear infinite;box-sizing:border-box}",
 			"@keyframes dstSpin{to{transform:rotate(360deg)}}",
@@ -574,6 +592,9 @@ window.__ModuleLoader__.load({
 			// 「可能在等待输入」计时：每次有新输出就重置。
 			const waitingTimerRef = react.useRef(null);
 			const [waitingHint, setWaitingHint] = react.useState(false);
+			// 会话列表是否已经从服务端取回。自动建标签必须等它——否则面板刚打开、
+			// views 还是空的那一瞬间就会建一个，跟随后恢复出来的会话变成两个。
+			const [sessionsLoaded, setSessionsLoaded] = react.useState(false);
 			// document 级 Ctrl+C 兜底监听读最新 activeView（effect 闭包不能直接用 state）。
 			const activeViewRef = react.useRef(null);
 
@@ -581,6 +602,9 @@ window.__ModuleLoader__.load({
 			// 会话状态在 node 半，重开时带 since 重连补齐）。
 			react.useEffect(() => {
 				if (!open) {
+					// 关闭时把「会话列表已加载」标记清掉：下次打开要重新等服务端回话，
+					// 否则自动建标签那条会拿着上一轮的结论抢跑，跟恢复出来的会话打架。
+					setSessionsLoaded(false);
 					for (const v of viewsRef.current) disconnectStream(v);
 					// 徽标轮询：面板关闭期间检测新结束的非零退出命令。
 					lastExitAtRef.current = Date.now();
@@ -628,8 +652,12 @@ window.__ModuleLoader__.load({
 						}
 						return next;
 					});
+					if (alive) setSessionsLoaded(true);
 				}).catch(() => {
-					if (alive) setNotice(t("terminal.error.load"));
+					if (alive) {
+						setNotice(t("terminal.error.load"));
+						setSessionsLoaded(true);
+					}
 				});
 				return () => { alive = false; };
 			}, [open, badgeStore, t]);
@@ -713,6 +741,31 @@ window.__ModuleLoader__.load({
 					setNotice(t("terminal.error.create"));
 				}
 			}, [linkedWorkspaceId, t]);
+
+			// 打开面板就自动为当前工作区开一个标签 —— 用户反馈「打开工作区本来就该
+			// 有一个对应的终端，不该还要先点 +」。三条门槛缺一不可：
+			//   · 会话列表已经取回（否则会跟服务端恢复出来的会话重复建）；
+			//   · 确实一个标签都没有；
+			//   · 有当前工作区（没选工作区时交给空态文案去引导，那才是该出现 + 的场合）。
+			// 判据是「**当前工作区**有没有对应的标签」，不是「有没有任何标签」：切到另一个
+			// 工作区时，手上那个标签的 cwd 还指着上一个项目，等于没有可用的终端。
+			// autoCreatedForRef 记住本次打开已经为哪个工作区自动建过，于是：重开面板不会
+			// 重复建；用户手动关掉某个工作区的标签，也不会被立刻重建（关不掉）。
+			const autoCreatedForRef = react.useRef(null);
+			react.useEffect(() => {
+				if (!open) {
+					autoCreatedForRef.current = null;
+					return;
+				}
+				if (!sessionsLoaded || !linkedWorkspaceId) return;
+				if (autoCreatedForRef.current === linkedWorkspaceId) return;
+				if (views.some((v) => v.workspaceId === linkedWorkspaceId)) {
+					autoCreatedForRef.current = linkedWorkspaceId;
+					return;
+				}
+				autoCreatedForRef.current = linkedWorkspaceId;
+				void createTab();
+			}, [open, sessionsLoaded, views, linkedWorkspaceId, createTab]);
 
 			// —— 关闭标签 ——
 			const closeTab = react.useCallback(async (id) => {
@@ -1097,8 +1150,11 @@ window.__ModuleLoader__.load({
 						onScroll: handleScroll,
 						children: [
 							showEmpty ? react_jsx_runtime.jsx("div", { className: "dstEmpty", children: react_jsx_runtime.jsxs(react_jsx_runtime.Fragment, { children: [
+								// 没标签时分两种情况：没选工作区 → 说明「打开工作区就会自动开」
+								// （这才是唯一该出现空态的场合）；有工作区却没标签 → 只可能是
+								// 用户自己把标签都关了，那就照旧提示点 +。
 								views.length === 0
-									? react_jsx_runtime.jsx("div", { children: t("terminal.empty.noTabs") })
+									? react_jsx_runtime.jsx("div", { children: linkedWorkspaceId ? t("terminal.empty.noTabs") : t("terminal.empty.noWorkspace") })
 									: react_jsx_runtime.jsxs(react_jsx_runtime.Fragment, { children: [
 										react_jsx_runtime.jsx("div", { className: "dstEmptyTitle", children: t("terminal.empty.title") }),
 										react_jsx_runtime.jsx("div", { children: activeView && activeView.shellKind === "pwsh" ? t("terminal.empty.shell.pwsh") : t("terminal.empty.shell.bash") }),
@@ -1159,7 +1215,10 @@ window.__ModuleLoader__.load({
 					// 状态栏
 					react_jsx_runtime.jsxs("div", { className: "dstStatusBar", children: [
 						activeView ? react_jsx_runtime.jsxs(react_jsx_runtime.Fragment, { children: [
-							react_jsx_runtime.jsx("span", { className: "dstStatusCwd", title: activeView.cwd, children: `${activeView.shellKind} · ${activeView.cwd}` })
+							react_jsx_runtime.jsxs("span", { className: "dstStatusCwd", title: activeView.cwd, children: [
+								react_jsx_runtime.jsx("span", { className: "dstStatusShell", children: `${activeView.shellKind} · ` }),
+								react_jsx_runtime.jsx("span", { className: "dstStatusPath", children: activeView.cwd })
+							] })
 						] }) : react_jsx_runtime.jsx("span", { className: "dstStatusCwd" }),
 						running ? react_jsx_runtime.jsxs("span", { className: "dstStatusRight", children: [
 							// 停止按钮：运行中可见，不依赖用户记得 Ctrl+C（可发现性）。

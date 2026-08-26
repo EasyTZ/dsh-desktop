@@ -1,6 +1,6 @@
 {
   "name": "deepseek-desktop",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "DeepSeek Harness 桌面版 —— 以 dsh 为内核的 Windows 桌面应用",
   "main": "src/main/index.js",
   "author": "EasyTZ",
