@@ -58,8 +58,8 @@ README 原文：*"iterating rapidly. **THERE WILL BE COMPATIBILITY-BREAKING CHAN
 
 ### 已知偏离（待收敛）
 
-1. `src/preload/index.js` 的自定义标题栏是**透明悬浮层**，不再用 `#root{padding-top}` 挤开页面布局，而是直接叠在 dsh 页面顶部（省掉了旧版本靠 `[class*="sidebarCol"]` 弱耦合匹配侧边栏、只为了伪装背景色这一层刮 DOM 的代码）。代价转移到了另一处：叠加区域整体是 `-webkit-app-region:drag`，如果 dsh 某个页面顶部 32px 内恰好有真实可点击内容，会被挡住点不到。目前只用一张欢迎页截图判断过顶部是空的，**没有跑遍 dsh 的其他页面**（活跃会话、设置页等）——按钮点不到多半是这个原因，需要针对那块加 `-webkit-app-region:no-drag` 例外，或退回「reserve 空间」的旧方案（`git log` 里能翻到 `src/preload/index.js` 改动前的版本）。
-2. 向上游提 slot PR（各 UI 包声明了几十个槽，但没有窗口 chrome 的），落地后标题栏从 L3 的 DOM 悬浮层变成 L2 的客户端插件，上面那条连同「叠加区域挡点击」的风险一起消失。
+1. `src/preload/index.js` 的自定义标题栏用 `#root{padding-top: TITLEBAR_HEIGHT}` 把整页面推低。「悬浮透明层」（不占布局、叠在 dsh 页面顶部）方案试过：视觉上更好看，但标题栏区域是 `-webkit-app-region:drag`，dsh 某页顶部若有真实内容会被盖住/挡住点击——实测命中会话页右上角的「Session log 下载」按钮（`@deepseek-ai/dsh-session-log-export`，注册在 `conversation.session.header.utilities`），且这个冲突是 dsh 自己的布局导致的，标题栏缩窄也躲不开。曾考虑用 `--patch` overlay 的 `disabled: true` 只关掉这一个内置条目（dsh 自己关遥测就是这么干的，技术可行），但它和 `/export` 命令共用同一个 fiber，关条目会连命令一起关掉，最终选择保留功能、退回 padding-top。代价：侧边栏顶部留白 = dsh 自己的留白 + 我们这一份，比悬浮方案明显更大——这是权衡后接受的，不是待修的 bug。标题栏背景仍然分两段：左段用 `[class*="sidebarCol"]` 弱耦合匹配侧边栏、`ResizeObserver` 跟踪宽度，颜色取 `--dsw-specific-sidebar-fill`；右段固定 `--dsw-alias-bg-base`。两者是 dsh 里不同的底色 token，标题栏必须跟着分段，用统一背景色会在侧边栏交界处露出色差（曾经改成统一色，被这条绊了一次）。探测失败（15s 超时）会经 `titlebar:sidebar-probe-failed` 让主进程记一行日志，不会无声失败，但耦合本身还在，是这条里最典型的「该往 L2 挤」的债。
+2. 向上游提 slot PR（各 UI 包声明了几十个槽，但没有窗口 chrome 的），落地后标题栏从 L3 的 DOM 注入变成 L2 的客户端插件，上面那条连同 padding-top 一起消失。
 
 ### 跨平台
 

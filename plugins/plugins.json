@@ -2,5 +2,17 @@
   {
     "srcDir": "dsh-ui-balance",
     "entryId": "balance"
+  },
+  {
+    "srcDir": "dsh-git",
+    "entryId": "git"
+  },
+  {
+    "srcDir": "dsh-reveal-explorer",
+    "entryId": "reveal-explorer"
+  },
+  {
+    "srcDir": "dsh-terminal-panel",
+    "entryId": "terminal-panel"
   }
 ]
