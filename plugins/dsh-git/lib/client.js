@@ -24,6 +24,11 @@ window.__ModuleLoader__.load({
 			"git.branch.unborn": "尚无提交",
 			"git.branch.label": "分支",
 			"git.branch.switching": "切换中…",
+			"git.section.changes": "变更",
+			"git.section.collapse": "折叠",
+			"git.section.expand": "展开",
+			"git.history.pushed": "已推送",
+			"git.history.unpushed": "未推送",
 			"git.section.staged": "已暂存的更改",
 			"git.section.unstaged": "更改",
 			"git.section.untracked": "未跟踪的文件",
@@ -39,6 +44,7 @@ window.__ModuleLoader__.load({
 			"git.commit.nothingToCommit": "没有可提交的更改",
 			"git.commit.untrackedOnly": "只有未跟踪的新文件，请先点文件旁的「+」暂存后再提交",
 			"git.push.submit": "推送",
+			"git.push.nothing": "没有待推送的提交",
 			"git.push.pushing": "推送中…",
 			"git.push.done": "已推送",
 			"git.history.undo": "撤销这次提交",
@@ -64,6 +70,11 @@ window.__ModuleLoader__.load({
 			"git.branch.unborn": "no commits yet",
 			"git.branch.label": "Branch",
 			"git.branch.switching": "Switching…",
+			"git.section.changes": "Changes",
+			"git.section.collapse": "Collapse",
+			"git.section.expand": "Expand",
+			"git.history.pushed": "Pushed",
+			"git.history.unpushed": "Not pushed",
 			"git.section.staged": "Staged Changes",
 			"git.section.unstaged": "Changes",
 			"git.section.untracked": "Untracked Files",
@@ -79,6 +90,7 @@ window.__ModuleLoader__.load({
 			"git.commit.nothingToCommit": "No changes to commit",
 			"git.commit.untrackedOnly": "Only untracked new files — stage them with “+” first",
 			"git.push.submit": "Push",
+			"git.push.nothing": "Nothing to push",
 			"git.push.pushing": "Pushing…",
 			"git.push.done": "Pushed",
 			"git.history.undo": "Undo this commit",
@@ -128,7 +140,10 @@ window.__ModuleLoader__.load({
 			".dsgDropdownTrigger svg{flex:none;color:var(--dsw-alias-label-tertiary,#8b949e)}",
 			".dsgDropdownValue{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
 			".dsgDropdownCompact{display:inline-block}",
-			".dsgDropdownCompact .dsgDropdownTrigger{width:auto;max-width:200px;height:auto;padding:2px 4px;margin:-2px -4px;border:none;background:transparent;border-radius:5px}",
+			// 分支下拉：原来是「几乎看不出是个可点控件」的紧凑态（无边框、2px 内边距），
+			// 用户反馈太小不好点。给回边框与实体背景、加大到 26px 高，仍比工作区那个
+			// 满宽下拉克制，但一眼能看出可点。
+			".dsgDropdownCompact .dsgDropdownTrigger{width:auto;max-width:240px;height:26px;padding:0 8px;border:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));background:var(--dsw-alias-bg-layer-1,#151517);border-radius:7px}",
 			".dsgDropdownCompact .dsgDropdownTrigger:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}",
 			// 弹层自己独立圆角 + 阴影 + 边框，颜色全走 token——这就是自绘下拉相对原生
 			// select 的意义所在：这几样原生弹层基本不受 CSS 控制。
@@ -161,6 +176,9 @@ window.__ModuleLoader__.load({
 			".dsgCommitFooter{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:8px}",
 			".dsgCommitResult{font-size:12px;color:var(--dsw-alias-state-success-primary,#3fb950)}",
 			".dsgCommitBtn{height:30px;padding:0 16px;border:none;border-radius:8px;background:var(--dsw-alias-button-primary-fill,#4d6bfe);color:var(--dsw-alias-label-primary-inverted,#fff);font-size:12.5px;font-weight:600;font-family:inherit;cursor:pointer;transition:background .15s ease,opacity .15s ease}",
+			// 推送是次级动作：描边按钮，跟实心的提交拉开层级，两个都常驻也不会打架。
+			".dsgCommitBtnSecondary{background:transparent;border:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.14));color:var(--dsw-alias-label-primary,#f9fafb)}",
+			".dsgCommitBtnSecondary:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}",
 			".dsgCommitBtn:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover,#5a77ff)}",
 			".dsgCommitBtn:disabled{opacity:.45;cursor:default}",
 			".dsgHistoryRow{padding:6px 4px;border-radius:6px}",
@@ -169,6 +187,19 @@ window.__ModuleLoader__.load({
 			".dsgHistoryHash{flex:none;font-family:ui-monospace,monospace;font-size:11.5px;color:var(--dsw-alias-label-tertiary,#8b949e)}",
 			".dsgHistorySubject{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary,#f9fafb)}",
 			".dsgHistoryMeta{font-size:11px;color:var(--dsw-alias-label-tertiary,#8b949e);margin-top:2px}",
+			// 提交的推送状态：用户反馈「看不出哪些提交推过了」。未推送的用强调色实心点
+			// + 文字，已推送的用弱化的空心点 —— 未推送是**需要用户行动**的状态，
+			// 必须比已推送显眼，光靠灰度差分不出来。
+			".dsgPushState{flex:none;display:inline-flex;align-items:center;gap:4px;font-size:10.5px;line-height:1;padding:2px 6px;border-radius:999px;white-space:nowrap}",
+			".dsgPushStateUnpushed{color:var(--dsw-alias-state-warn-primary,#e3a008);background:var(--dsw-alias-state-warn-bg,rgba(227,160,8,.12))}",
+			".dsgPushStatePushed{color:var(--dsw-alias-label-tertiary,#8b949e)}",
+			// 变更区可折叠：issue 里提到「更改文件的查看优先级不用那么高」。折叠头是
+			// 整行可点的按钮，右侧是文件总数。
+			".dsgCollapseHead{display:flex;align-items:center;gap:6px;width:100%;padding:4px 4px;margin-bottom:6px;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-tertiary,#8b949e);font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.03em;font-family:inherit;cursor:pointer;text-align:left}",
+			".dsgCollapseHead:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06));color:var(--dsw-alias-label-secondary,#cfd3d6)}",
+			".dsgCollapseHead .dsgCollapseCount{margin-left:auto;font-weight:500}",
+			".dsgCollapseChevron{flex:none;transition:transform .15s ease}",
+			".dsgCollapseChevron.dsgCollapsed{transform:rotate(-90deg)}",
 			// 武装态（等待第二次点击确认）用错误色实心填充+文字提醒——光换图标
 			// 颜色太容易被忽略（按钮本来就小），实心背景+长出来的文字才不会被
 			// 误以为「点了没反应」。跟标题栏关闭按钮 hover 变红是同一套危险确认
@@ -405,16 +436,16 @@ window.__ModuleLoader__.load({
 			// 拒绝，我们把那条拒绝原样翻成 actionError 显示出来即可。按钮长期灰着
 			// 会被误认成「坏了」，不如让它一直可点、点了没东西可提交就明确告诉你。
 			//
-			// 同一个按钮在「提交」「推送」之间切：输入框里有草稿消息时优先提交
-			// （用户明显想先提交这段），消息框空着、且本地领先远端（或还没建立
-			// 跟踪关系）时才切成推送——对应「提交完检查状态，没问题就变成推送」
-			// 这个流程，不需要用户在两个按钮之间切换。
-			const showPush = canPush && message.trim().length === 0;
+			// **提交与推送是两个常驻按钮**，不再共用一个位置来回切。早期那版是
+			// 「消息框空着且本地领先远端时，按钮变成推送」，用户反馈（issue #1）说
+			// 这不合理：有未推送的提交、同时又有新改动想提交时，界面只给推送，
+			// 想提交得先在消息框里打字才能把按钮换回来 —— 本末倒置。两个按钮各自
+			// 按自己的条件启用，用户想干哪件就点哪个。
 			const busy = committing || pushing;
-			const label = committing ? t("git.commit.submitting")
-				: pushing ? t("git.push.pushing")
-				: showPush ? (ahead > 0 ? `${t("git.push.submit")} (${ahead})` : t("git.push.submit"))
-				: t("git.commit.submit");
+			const commitLabel = committing ? t("git.commit.submitting") : t("git.commit.submit");
+			const pushLabel = pushing
+				? t("git.push.pushing")
+				: (ahead > 0 ? `${t("git.push.submit")} ↑${ahead}` : t("git.push.submit"));
 			return react_jsx_runtime.jsxs("div", { className: "dsgCommitBox", children: [
 				react_jsx_runtime.jsx("textarea", {
 					className: "dsgCommitInput",
@@ -427,12 +458,22 @@ window.__ModuleLoader__.load({
 				actionError ? react_jsx_runtime.jsx("div", { className: "dsgBanner dsgBannerErr", style: { marginTop: 8, marginBottom: 0 }, children: actionError }) : null,
 				react_jsx_runtime.jsxs("div", { className: "dsgCommitFooter", children: [
 					!actionError && resultMessage ? react_jsx_runtime.jsx("span", { className: "dsgCommitResult", children: resultMessage }) : null,
+					// 推送放在提交左边、用次级样式：提交是这个面板里最常用的动作，
+					// 主按钮位置（最右）留给它。
+					react_jsx_runtime.jsx("button", {
+						type: "button",
+						className: "dsgCommitBtn dsgCommitBtnSecondary",
+						disabled: busy || !canPush,
+						title: canPush ? pushLabel : t("git.push.nothing"),
+						onClick: onPush,
+						children: pushLabel
+					}),
 					react_jsx_runtime.jsx("button", {
 						type: "button",
 						className: "dsgCommitBtn",
-						disabled: busy || (!showPush && message.trim().length === 0),
-						onClick: showPush ? onPush : onCommit,
-						children: label
+						disabled: busy || message.trim().length === 0,
+						onClick: onCommit,
+						children: commitLabel
 					})
 				] })
 			] });
@@ -482,19 +523,33 @@ window.__ModuleLoader__.load({
 			});
 		}
 
-		function HistorySection({ t, commits, onUndo, undoing }) {
+		function HistorySection({ t, commits, onUndo, undoing, unpushedCount = 0 }) {
 			return react_jsx_runtime.jsxs("div", { className: "dsgSection", children: [
 				react_jsx_runtime.jsx("div", { className: "dsgSectionTitle", children: react_jsx_runtime.jsx("span", { children: t("git.section.history") }) }),
 				commits.length === 0
 					? react_jsx_runtime.jsx("div", { className: "dsgEmpty", children: t("git.history.empty") })
-					: commits.map((c, index) => react_jsx_runtime.jsxs("div", { className: "dsgHistoryRow", children: [
-						react_jsx_runtime.jsxs("div", { className: "dsgHistoryTop", children: [
-							react_jsx_runtime.jsx("span", { className: "dsgHistoryHash", children: c.shortHash }),
-							react_jsx_runtime.jsx("span", { className: "dsgHistorySubject", title: c.subject, children: c.subject }),
-							index === 0 ? react_jsx_runtime.jsx(UndoCommitButton, { t, undoing, onUndo }) : null
-						] }),
-						react_jsx_runtime.jsx("div", { className: "dsgHistoryMeta", children: `${c.author} · ${formatDate(c.date)}` })
-					] }, c.hash))
+					: commits.map((c, index) => {
+						// 前 unpushedCount 条是还没推上去的（git log 倒序）。这条状态原来
+						// 完全看不出来，用户反馈「分不清哪些提交推过了」（issue #1）。
+						const unpushed = index < unpushedCount;
+						return react_jsx_runtime.jsxs("div", { className: "dsgHistoryRow", children: [
+							react_jsx_runtime.jsxs("div", { className: "dsgHistoryTop", children: [
+								react_jsx_runtime.jsx("span", { className: "dsgHistoryHash", children: c.shortHash }),
+								react_jsx_runtime.jsx("span", { className: "dsgHistorySubject", title: c.subject, children: c.subject }),
+								index === 0 ? react_jsx_runtime.jsx(UndoCommitButton, { t, undoing, onUndo }) : null
+							] }),
+							react_jsx_runtime.jsxs("div", { className: "dsgHistoryMeta", children: [
+								react_jsx_runtime.jsxs("span", {
+									className: "dsgPushState " + (unpushed ? "dsgPushStateUnpushed" : "dsgPushStatePushed"),
+									children: [
+										react_jsx_runtime.jsx("span", { children: unpushed ? "●" : "○" }),
+										react_jsx_runtime.jsx("span", { children: unpushed ? t("git.history.unpushed") : t("git.history.pushed") })
+									]
+								}),
+								react_jsx_runtime.jsx("span", { children: ` ${c.author} · ${formatDate(c.date)}` })
+							] })
+						] }, c.hash);
+					})
 			] });
 		}
 
@@ -532,6 +587,15 @@ window.__ModuleLoader__.load({
 
 			const [view, setView] = react.useState({ status: "idle", error: null, data: null, commits: [], branches: [] });
 			const [message, setMessage] = react.useState("");
+			// 变更列表默认折叠（issue #1：它的查看优先级不该高过提交本身），但记住
+			// 用户的选择 —— 想边看边挑文件暂存的人，不该每次打开面板都再点一次。
+			const [changesOpen, setChangesOpenState] = react.useState(() => {
+				try { return localStorage.getItem("dsg:changesOpen") === "1"; } catch { return false; }
+			});
+			const setChangesOpen = (next) => {
+				setChangesOpenState(next);
+				try { localStorage.setItem("dsg:changesOpen", next ? "1" : "0"); } catch { /* 忽略 */ }
+			};
 			const [committing, setCommitting] = react.useState(false);
 			const [pushing, setPushing] = react.useState(false);
 			// 提交成功显示「已提交 <hash>」、推送成功显示「已推送」——同一块地方，
@@ -686,11 +750,12 @@ window.__ModuleLoader__.load({
 			const unstaged = data ? data.unstaged : [];
 			const untracked = data ? data.untracked : [];
 			const branches = view.branches;
-			const hasChanges = staged.length + unstaged.length + untracked.length > 0;
-			// 有本地领先远端的提交（ahead>0），或者干脆还没建立跟踪关系
-			// （!hasUpstream——第一次推这个分支），都值得把按钮切成「推送」；
-			// detached/unborn 没有「当前分支」可推，不提供。真没有 remote 时
-			// 点了会拿到 no-remote 的报错，不是灾难性后果，接受这点误触成本。
+			const changeCount = staged.length + unstaged.length + untracked.length;
+			const hasChanges = changeCount > 0;
+			// 推送按钮什么时候可用：有本地领先远端的提交（ahead>0），或者干脆还没
+			// 建立跟踪关系（!hasUpstream——第一次推这个分支）。detached/unborn 没有
+			// 「当前分支」可推，按钮置灰。真没有 remote 时点了会拿到 no-remote 的
+			// 报错，不是灾难性后果，接受这点误触成本。
 			const canPush = !!data && !data.detached && !data.unborn && (data.ahead > 0 || !data.hasUpstream);
 
 			return react_jsx_runtime.jsxs("div", { className: "dsgPanel" + (open ? " dsgOpen" : ""), children: [
@@ -744,19 +809,46 @@ window.__ModuleLoader__.load({
 								: (data.ahead > 0 || data.behind > 0) ? react_jsx_runtime.jsx("span", { className: "dsgBranchAB", children: `↑${data.ahead} ↓${data.behind}` }) : null
 						] }),
 
-						!hasChanges ? react_jsx_runtime.jsx("div", { className: "dsgEmpty", children: t("git.section.empty") }) : null,
-
-						react_jsx_runtime.jsx(FileSection, { title: t("git.section.staged"), entries: staged, mode: "staged", onAction: onUnstage, t }),
-						react_jsx_runtime.jsx(FileSection, { title: t("git.section.unstaged"), entries: unstaged, mode: "unstaged", onAction: onStage, t }),
-						react_jsx_runtime.jsx(FileSection, { title: t("git.section.untracked"), entries: untracked, mode: "untracked", onAction: onStage, t }),
-
+						// 提交框紧跟分支行：这是面板里最高频的动作，用户反馈要「打开就能直接
+						// 提交」，不该被一长串变更文件挤到下面去（issue #1）。
 						react_jsx_runtime.jsx(CommitBox, {
 							t, committing, pushing, message,
 							onMessageChange: setMessage, onCommit, onPush, canPush,
 							ahead: data.ahead, resultMessage, actionError
 						}),
 
-						react_jsx_runtime.jsx(HistorySection, { t, commits: view.commits, onUndo: onUndoCommit, undoing })
+						!hasChanges ? react_jsx_runtime.jsx("div", { className: "dsgEmpty", children: t("git.section.empty") }) : null,
+
+						hasChanges ? react_jsx_runtime.jsxs(react_jsx_runtime.Fragment, { children: [
+							react_jsx_runtime.jsxs("button", {
+								type: "button",
+								className: "dsgCollapseHead",
+								"aria-expanded": changesOpen,
+								title: changesOpen ? t("git.section.collapse") : t("git.section.expand"),
+								onClick: () => setChangesOpen(!changesOpen),
+								children: [
+									react_jsx_runtime.jsx("span", {
+										className: "dsgCollapseChevron" + (changesOpen ? "" : " dsgCollapsed"),
+										children: react_jsx_runtime.jsx(ChevronIcon, {})
+									}),
+									react_jsx_runtime.jsx("span", { children: t("git.section.changes") }),
+									react_jsx_runtime.jsx("span", { className: "dsgCollapseCount", children: changeCount })
+								]
+							}),
+							changesOpen ? react_jsx_runtime.jsxs(react_jsx_runtime.Fragment, { children: [
+								react_jsx_runtime.jsx(FileSection, { title: t("git.section.staged"), entries: staged, mode: "staged", onAction: onUnstage, t }),
+								react_jsx_runtime.jsx(FileSection, { title: t("git.section.unstaged"), entries: unstaged, mode: "unstaged", onAction: onStage, t }),
+								react_jsx_runtime.jsx(FileSection, { title: t("git.section.untracked"), entries: untracked, mode: "untracked", onAction: onStage, t })
+							] }) : null
+						] }) : null,
+
+						react_jsx_runtime.jsx(HistorySection, {
+							t, commits: view.commits, onUndo: onUndoCommit, undoing,
+							// 没有上游时所有提交都算未推送；有上游时 git log 是倒序，
+							// 前 ahead 条就是本地领先远端的那些，不用额外再问一次 git。
+							unpushedCount: data.hasUpstream ? data.ahead : view.commits.length,
+							hasUpstream: data.hasUpstream
+						})
 					] }) : null
 				] })
 			] });
@@ -839,6 +931,10 @@ window.__ModuleLoader__.load({
 
 		exports.apply = apply;
 		exports.inject = inject;
+		// 只给单测用（test/git-client-smoke.test.js）。这个文件不在 typecheck 覆盖内，
+		// 而这两个组件承载着 issue #1 明确要求的行为（提交/推送两个常驻按钮、提交历史
+		// 区分推送状态），必须有东西钉住，否则下次重构很容易无意改回去。
+		exports.__test__ = { CommitBox, HistorySection };
 		return module.exports;
 	}
 });

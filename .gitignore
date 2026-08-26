@@ -4,3 +4,4 @@ dist/
 _smoke/
 release/
 *.log
+kernel-dist/

@@ -12,7 +12,10 @@ files:
   - src/**/*
   - package.json
 extraResources:
-  - from: kernel
+  # 内核以单个 kernel.tar.gz 的形式打进包，首次启动时由主进程铺开。
+  # 为什么不直接铺：资源管理器解 zip 的耗时由文件个数决定 —— 15444 个文件要 181 秒，
+  # 打成一个文件后用户那一步几乎瞬间完成。详见 scripts/pack-kernel.mjs。
+  - from: kernel-dist
     to: kernel
     filter:
       - "**/*"

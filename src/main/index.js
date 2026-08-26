@@ -10,6 +10,7 @@ const { createSplashWindow } = require('./splash');
 const { TaskNotifications } = require('./notifications');
 const { KernelUpdater } = require('./kernel-updater');
 const { summarizeStderr } = require('../shared/error-detail');
+const { needsUnpack, unpackKernel } = require('../shared/kernel-unpack');
 const { showUpdaterWindow, hideUpdaterWindow, destroyUpdaterWindow } = require('./updater-window');
 
 const APP_ID = 'com.deepseek.desktop';
@@ -380,7 +381,49 @@ if (!gotLock) {
     else if (splash && !splash.isDestroyed()) splash.focus();
   });
 
-  app.whenReady().then(() => {
+  /** 闪屏上的状态文案。闪屏是我们自己的页面，直接改它的 DOM 即可。 */
+  const setSplashStatus = (text) => {
+    if (!splash || splash.isDestroyed()) return;
+    splash.webContents.executeJavaScript(
+      `{const el=document.querySelector('.status');if(el)el.textContent=${JSON.stringify(text)};}`
+    ).catch(() => { /* 闪屏可能刚好被关掉，忽略 */ });
+  };
+
+  /**
+   * 首次启动时把打包成单文件的出厂内核铺开。
+   *
+   * 绿色版里内核是一个 kernel.tar.gz —— 15444 个小文件交给资源管理器解压要 181 秒，
+   * 打成一个文件后用户那一步几乎瞬间完成，这十几秒挪到这里由我们自己做（见
+   * src/shared/kernel-unpack.js）。解包只在首次发生：成功后归档会被删掉。
+   */
+  const unpackBuiltinKernelIfNeeded = async () => {
+    if (!needsUnpack(BUILTIN_KERNEL_DIR)) return true;
+    try {
+      const result = await unpackKernel({
+        kernelDir: BUILTIN_KERNEL_DIR,
+        fallbackDir: USER_KERNEL_DIR,
+        logger: console,
+        onStatus: setSplashStatus,
+      });
+      setSplashStatus('正在启动内核…');
+      if (result.usedFallback) {
+        console.warn(`[app] 出厂内核解到了用户目录：${result.dir}`);
+      }
+      return true;
+    } catch (error) {
+      console.error('[app] 内核解包失败:', error);
+      closeSplash();
+      reportKernelCrash({
+        detail: `${error?.message ?? error}\n\n磁盘空间不足或安全软件拦截都可能导致这一步失败。`,
+        title: 'DeepSeek 启动失败',
+        message: '内核解包失败，无法进入主界面',
+        retryLabel: '重试',
+      });
+      return false;
+    }
+  };
+
+  app.whenReady().then(async () => {
     // 先弹闪屏给用户即时反馈，再并行做内核启动等耗时初始化。
     splash = createSplashWindow();
     ensureStartMenuShortcut();
@@ -390,6 +433,9 @@ if (!gotLock) {
     // 上次弃用内核时若删到一半被杀掉，残骸会留在磁盘上（300+ MB）。异步清一遍，
     // 不占启动路径。
     sweepDiscardedKernels();
+    // 解包必须在 startDsh 之前完成：没铺开之前内核根本不存在。失败时上面已经
+    // 弹过说明框，这里直接不往下走（对话框的「重试」会重启应用）。
+    if (!(await unpackBuiltinKernelIfNeeded())) return;
     startDsh();
   });
 
