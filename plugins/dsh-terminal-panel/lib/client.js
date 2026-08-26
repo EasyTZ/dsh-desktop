@@ -27,6 +27,8 @@ window.__ModuleLoader__.load({
 			"terminal.input.waiting": "该命令可能在等待输入 —— 本终端不支持交互输入，请 Ctrl+C 终止后改用 --yes 之类的非交互参数",
 			"terminal.status.running": "运行中",
 			"terminal.signal.stop": "停止",
+			"terminal.external.open": "在系统终端中打开",
+			"terminal.external.failed": "打开系统终端失败",
 			"terminal.scroll.newOutput": "↓ {n} 行新输出",
 			"terminal.error.create": "创建终端标签失败",
 			"terminal.error.load": "加载终端会话失败",
@@ -51,6 +53,8 @@ window.__ModuleLoader__.load({
 			"terminal.input.waiting": "This command may be waiting for input — interactive input is not supported. Press Ctrl+C and use a non-interactive flag like --yes",
 			"terminal.status.running": "Running",
 			"terminal.signal.stop": "Stop",
+			"terminal.external.open": "Open in system terminal",
+			"terminal.external.failed": "Failed to open the system terminal",
 			"terminal.scroll.newOutput": "↓ {n} new lines",
 			"terminal.error.create": "Failed to create terminal tab",
 			"terminal.error.load": "Failed to load terminal sessions",
@@ -231,6 +235,18 @@ window.__ModuleLoader__.load({
 				children: react_jsx_runtime.jsx("path", { d: "M8 3v10M3 8h10" })
 			});
 		}
+		// 「在系统终端中打开」：一个方框 + 右上角外指的箭头（跟 dsh 里"跳出去"的
+		// 通用语义一致），线条粗细与其它图标对齐。
+		function ExternalIcon() {
+			return react_jsx_runtime.jsxs("svg", {
+				viewBox: "0 0 16 16", width: 14, height: 14, fill: "none",
+				stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round",
+				children: [
+					react_jsx_runtime.jsx("path", { d: "M13 9.5v3.5H3V3h3.5" }),
+					react_jsx_runtime.jsx("path", { d: "M9.5 2.5H13.5V6.5M13.5 2.5L8 8" })
+				]
+			});
+		}
 		function MaximizeIcon() {
 			return react_jsx_runtime.jsx("svg", {
 				viewBox: "0 0 16 16", width: 14, height: 14, fill: "none",
@@ -269,33 +285,73 @@ window.__ModuleLoader__.load({
 		const HISTORY_LIMIT = 200;
 		const LINE_KEEP = 5000; // 与 node 半环形缓冲同上限，避免无界增长
 
-		function loadHistory(sessionId) {
+		// 历史按**工作区**存，不能按会话 id 存：会话 id 是每次新建时 mint 的 UUID、
+		// 且随内核进程消亡，按它存等于「重启应用后 ↑ 永远是空的」，还会在
+		// localStorage 里留下一堆再也不会被读到的孤儿键（只增不减）。前缀带 v2 是
+		// 为了能把老键一次性清掉（见 migrateHistoryKeys）。
+		const HISTORY_PREFIX = "dst:term:hist2:";
+		const LEGACY_HISTORY_PREFIX = "dst:term:hist:";
+
+		/** 工作区未知时的兜底桶（正常路径下拿得到 workspaceId）。 */
+		function historyKey(workspaceId) {
+			return HISTORY_PREFIX + (workspaceId || "default");
+		}
+
+		/** 一次性清掉按会话 id 存的老键。无条件删，不做形状猜测。 */
+		function migrateHistoryKeys() {
 			try {
-				const raw = localStorage.getItem("dst:term:hist:" + sessionId);
+				const stale = [];
+				for (let i = 0; i < localStorage.length; i++) {
+					const key = localStorage.key(i);
+					if (key && key.startsWith(LEGACY_HISTORY_PREFIX)) stale.push(key);
+				}
+				for (const key of stale) localStorage.removeItem(key);
+			} catch {
+				// localStorage 不可用（隐私模式等）时忽略：历史本来就是锦上添花。
+			}
+		}
+
+		function loadHistory(workspaceId) {
+			try {
+				const raw = localStorage.getItem(historyKey(workspaceId));
 				const arr = raw ? JSON.parse(raw) : [];
 				return Array.isArray(arr) ? arr.filter((s) => typeof s === "string").slice(-HISTORY_LIMIT) : [];
 			} catch {
 				return [];
 			}
 		}
-		function saveHistory(sessionId, history) {
+		function saveHistory(workspaceId, history) {
 			try {
-				localStorage.setItem("dst:term:hist:" + sessionId, JSON.stringify(history.slice(-HISTORY_LIMIT)));
+				localStorage.setItem(historyKey(workspaceId), JSON.stringify(history.slice(-HISTORY_LIMIT)));
 			} catch {
 				// localStorage 配额满时静默丢弃（历史丢了不影响功能）
 			}
 		}
-		function pushHistory(sessionId, history, command) {
+		function pushHistory(workspaceId, history, command) {
 			const next = history.slice(-HISTORY_LIMIT);
 			if (next[next.length - 1] !== command) next.push(command);
-			saveHistory(sessionId, next);
+			saveHistory(workspaceId, next);
 			return next;
+		}
+
+		// 行的稳定 key。渲染窗口是最近 2000 行，用数组下标当 key 的话，每来一行所有
+		// 下标就平移一位，React 得把 2000 个节点全量 diff 一遍 —— 重输出场景下每帧
+		// 如此。打一个自增 id 上去，React 只需要处理真正新增的那几行。
+		let lineKeySeq = 0;
+		function stampKey(line) {
+			if (line.__k === undefined) line.__k = ++lineKeySeq;
+			return line;
+		}
+		function stampKeys(lines) {
+			for (const line of lines) stampKey(line);
+			return lines;
 		}
 
 		function createView(meta) {
 			return {
 				id: meta.id,
 				token: meta.token,
+				workspaceId: meta.workspaceId || null,
 				cwd: meta.cwd,
 				shellKind: meta.shellKind,
 				state: meta.state || "idle",
@@ -311,7 +367,7 @@ window.__ModuleLoader__.load({
 				lastOutputAt: 0,
 				exitCode: null,
 				durationMs: null,
-				history: loadHistory(meta.id),
+				history: loadHistory(meta.workspaceId || null),
 				historyIdx: -1
 			};
 		}
@@ -362,8 +418,8 @@ window.__ModuleLoader__.load({
 				const data = JSON.parse(e.data);
 				view.lastSeq = Math.max(view.lastSeq, data.seq);
 				// truncated 时历史不全，整段替换；否则增量追加（窗口内）。
-				if (data.truncated) view.lines = data.lines;
-				else if (data.lines.length > 0) view.lines = view.lines.concat(data.lines);
+				if (data.truncated) view.lines = stampKeys(data.lines);
+				else if (data.lines.length > 0) view.lines = view.lines.concat(stampKeys(data.lines));
 				view.state = data.state;
 				view.cwd = data.cwd;
 				view.currentCommand = data.currentCommand;
@@ -375,10 +431,13 @@ window.__ModuleLoader__.load({
 				view.lastSeq = Math.max(view.lastSeq, data.seq);
 				for (const line of data.append) {
 					if (line.replaceLast && view.lines.length > 0) {
-						// \r 进度条重写当前行：替换尾部而不是追加。
+						// \r 进度条重写当前行：替换尾部而不是追加。key 沿用被替换那行的
+						// —— 它是「同一行的重写」，复用 key 让 React 原地更新而不是拆了重建。
+						const prev = view.lines[view.lines.length - 1];
+						line.__k = prev.__k !== undefined ? prev.__k : ++lineKeySeq;
 						view.lines[view.lines.length - 1] = line;
 					} else {
-						view.lines.push(line);
+						view.lines.push(stampKey(line));
 					}
 				}
 				if (view.lines.length > LINE_KEEP) view.lines = view.lines.slice(-LINE_KEEP);
@@ -419,9 +478,26 @@ window.__ModuleLoader__.load({
 		//#endregion
 
 		//#region footer 按钮
+		// 侧边栏 footer 容器的弱耦合探测。样式里那条
+		// `[class*="footerActions"]{flex-direction:column}` 靠的是上游 CSS Modules
+		// 类名里保留的原始片段（同 CLAUDE.md 里标题栏 [class*="sidebarCol"] 的先例）。
+		// 上游一改名，Git 与终端两个按钮就会**无声地**挤回同一行 —— 至少让控制台
+		// 留一句话，别让人对着变形的界面猜。
+		let footerProbeDone = false;
+		function probeFooterContainer() {
+			if (footerProbeDone) return;
+			footerProbeDone = true;
+			if (!document.querySelector('[class*="footerActions"]')) {
+				console.warn('[dsh-terminal-panel] 未匹配到侧边栏 footer 容器（[class*="footerActions"]），'
+					+ "上游可能已改动该类名；侧边栏底部按钮的纵向排列会失效。");
+			}
+		}
+
 		function TerminalFooterAction({ wide, t, store, badgeStore }) {
 			const open = react.useSyncExternalStore(store.subscribe, store.getSnapshot);
 			const badge = react.useSyncExternalStore(badgeStore.subscribe, badgeStore.getSnapshot);
+			// 挂载后探一次（此时容器一定已经在 DOM 里 —— 我们就长在它里面）。
+			react.useEffect(probeFooterContainer, []);
 			return react_jsx_runtime.jsxs("button", {
 				type: "button",
 				className: "dstFooterBtn" + (open ? " dstFooterBtnActive" : ""),
@@ -702,7 +778,7 @@ window.__ModuleLoader__.load({
 						setInput(raw);
 						return;
 					}
-					view.history = pushHistory(view.id, view.history, command);
+					view.history = pushHistory(view.workspaceId, view.history, command);
 					view.historyIdx = -1;
 					view.startedAt = Date.now();
 					view.lastOutputAt = Date.now();
@@ -751,6 +827,22 @@ window.__ModuleLoader__.load({
 				return () => document.removeEventListener("keydown", onKey);
 			}, [open, sendSignal]);
 
+			// —— 在系统终端中打开 ——
+			// 面板跑不了交互式程序（vim / sudo 密码 / npm init 的问答），这是命令
+			// 控制台的硬边界。与其让用户卡在那儿，不如给个台阶：带**当前 cwd**
+			// 跳到系统自带的终端里去（用户可能已经 cd 到很深的地方，回工作区根
+			// 目录等于让他重走一遍）。
+			const openExternal = react.useCallback(async () => {
+				const view = activeView;
+				if (!view) return;
+				try {
+					const res = await postJson("/api/terminal/open-external", { id: view.id, token: view.token });
+					if (!res.ok) setNotice(res.error?.message || t("terminal.external.failed"));
+				} catch {
+					setNotice(t("terminal.external.failed"));
+				}
+			}, [activeView, t]);
+
 			const clearScreen = react.useCallback(async (view) => {
 				if (!view) return;
 				try {
@@ -766,7 +858,7 @@ window.__ModuleLoader__.load({
 			// 候选。候选列表是浏览器半自己插的一条 meta 行（不进 node 的环形缓冲，
 			// 刷新/重连就没了）—— 它是一次性的交互反馈，不是命令输出。
 			const appendLocalLine = react.useCallback((view, text) => {
-				view.lines.push({ stream: "meta", segments: [{ t: text, cls: [] }] });
+				view.lines.push(stampKey({ stream: "meta", segments: [{ t: text, cls: [] }] }));
 				if (view.onRender) view.onRender();
 			}, []);
 			// Tab 连按会并发发请求，只认最后一次的结果（补全是"当前输入"的函数，
@@ -947,6 +1039,13 @@ window.__ModuleLoader__.load({
 					// header
 					react_jsx_runtime.jsxs("div", { className: "dstHeader", children: [
 						react_jsx_runtime.jsx("span", { className: "dstHeaderTitle", children: t("terminal.panel.title") }),
+						// 没有标签时没有 cwd 可用，按钮就没有意义，隐藏掉。
+						activeView ? react_jsx_runtime.jsx("button", {
+							type: "button", className: "dstIconBtn",
+							"aria-label": t("terminal.external.open"), title: t("terminal.external.open"),
+							onClick: openExternal,
+							children: react_jsx_runtime.jsx(ExternalIcon, {})
+						}) : null,
 						react_jsx_runtime.jsx("button", {
 							type: "button", className: "dstIconBtn",
 							"aria-label": t("terminal.panel.newTab"), title: t("terminal.panel.newTab"),
@@ -1026,7 +1125,7 @@ window.__ModuleLoader__.load({
 											...line.segments.slice(1).map((seg, j) => react_jsx_runtime.jsx("span", { className: seg.cls.join(" "), children: seg.t }, j + 1))
 										] })
 										: line.segments.map((seg, j) => react_jsx_runtime.jsx("span", { className: seg.cls.join(" "), children: seg.t }, j))
-								}, i);
+								}, line.__k);
 							}),
 							!follow && pendingCount > 0 ? react_jsx_runtime.jsx("button", {
 								type: "button", className: "dstScrollPill",
@@ -1083,6 +1182,8 @@ window.__ModuleLoader__.load({
 
 		function apply(ctx) {
 			ctx.effect(() => ctx.locale.register(NS, { zh, en }), "terminal-panel: dictionaries");
+			// 清掉旧版按会话 id 存的历史键（它们永远不会再被读到，只会越堆越多）。
+			migrateHistoryKeys();
 			const store = createOpenStore();
 			const badgeStore = createBadgeStore();
 			const themeStore = createThemeStore(ctx);

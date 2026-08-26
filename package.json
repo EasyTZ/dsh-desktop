@@ -1,6 +1,6 @@
 {
   "name": "deepseek-desktop",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "DeepSeek Harness 桌面版 —— 以 dsh 为内核的 Windows 桌面应用",
   "main": "src/main/index.js",
   "author": "EasyTZ",
@@ -13,8 +13,9 @@
     "icon": "node scripts/gen-icon.mjs",
     "install-plugin": "node scripts/install-plugin.mjs",
     "prepare-kernel": "node scripts/prepare-kernel.mjs",
-    "dist": "node scripts/install-plugin.mjs && node scripts/prepare-kernel.mjs && electron-builder --win && node scripts/collect-release.mjs",
-    "dist:dir": "node scripts/install-plugin.mjs && node scripts/prepare-kernel.mjs && electron-builder --win --dir"
+    "dist": "node scripts/install-plugin.mjs && node scripts/prepare-kernel.mjs && node scripts/verify-kernel.mjs && electron-builder --win && node scripts/collect-release.mjs",
+    "dist:dir": "node scripts/install-plugin.mjs && node scripts/prepare-kernel.mjs && node scripts/verify-kernel.mjs && electron-builder --win --dir",
+    "verify-kernel": "node scripts/verify-kernel.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

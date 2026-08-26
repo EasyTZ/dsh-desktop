@@ -240,7 +240,12 @@ if (!gotLock) {
       console.error('[app] dsh 错误:', err);
       // 用户内核（热更新产物）启动失败：删掉损坏产物，回退内置内核重试一次，
       // 避免一次失败的内核更新把应用卡死。
-      if (service.usingUserKernel && !kernelFallbackAttempted) {
+      // 端口绑不上不是内核的错（系统保留端口段 / 安全软件拦截），删了用户内核
+      // 只会让用户白白重下一次，回退的内置内核照样撞同一个问题。DshService 已经
+      // 换端口重试过若干次，走到这里说明重试也没用，直接报错给用户看。
+      if (err && /** @type {any} */ (err).code === 'port-bind-failed') {
+        console.error('[app] 内核端口绑定失败，跳过内核回退');
+      } else if (service.usingUserKernel && !kernelFallbackAttempted) {
         kernelFallbackAttempted = true;
         console.warn('[app] 用户内核启动失败，弃用并回退内置内核:', USER_KERNEL_DIR);
         discardUserKernel();

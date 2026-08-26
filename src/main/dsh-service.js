@@ -9,8 +9,17 @@ const { resolvePackagedKernel } = require('../shared/kernel-paths');
 const { findFreePort } = require('../shared/net');
 const { findDshBinJsAsync } = require('../shared/dsh-locate');
 const { loadPluginManifest, writeActivationPatch } = require('../shared/plugin-install');
+const { isPortBindFailure, firstBindErrorLine } = require('../shared/error-detail');
 
 const URL_LINE_RE = /dsh web:\s+(https?:\/\/\S+)/;
+
+// 端口绑定失败的换端口重试上限。三次都撞上说明不是运气问题（多半是安全软件拦截
+// 或系统保留了很大一段端口），继续试没有意义，交给上层报错。
+const MAX_BIND_RETRIES = 3;
+
+// 等内核打印 URL 行的上限。--port 0 时端口只能从那行拿到，等不到就退回老做法。
+// 取 20s：冷启动要加载整棵 plugin tree，慢机器上十几秒是常态。
+const URL_LINE_TIMEOUT_MS = 20_000;
 
 // 端口应答后再观察这么久，确认内核没有在 plugin tree 加载阶段随后崩溃。
 // dsh 是「先绑端口、后加载插件树」，两者之间存在一个「HTTP 已通但内核仍会
@@ -66,8 +75,67 @@ class DshService extends EventEmitter {
     if (supersededUserVersion) {
       this.logger.log(`[dsh] 出厂内核较新，已跳过用户内核 ${supersededUserVersion}`);
     }
-    const port = await findFreePort();
-    this.url = `http://127.0.0.1:${port}`;
+    this.#nodeExe = nodeExe;
+    this.#binJs = binJs;
+    await this.#launch();
+    return this;
+  }
+
+  /** @type {string|null} */ #nodeExe = null;
+  /** @type {string|null} */ #binJs = null;
+  /** 端口绑定失败后换端口重试的次数。 */
+  #bindRetries = 0;
+  /** 退回「自己探端口再交给内核」的老做法（只有拿不到 URL 行时才置位）。 */
+  #explicitPortFallback = false;
+
+  /**
+   * 等不到内核打印 URL 行：杀掉它，换回「自己探一个端口」的老做法重来一次。
+   *
+   * 只可能在上游改掉那行输出格式时发生。宁可退回有交接窗口的老路，也不能让用户
+   * 对着一个「进程活着但永远不就绪」的闪屏干等 —— 那是最难自查的一种卡死。
+   */
+  #fallbackToExplicitPort() {
+    if (this.#explicitPortFallback) return; // 老路也没起来，交给就绪超时报错
+    this.#explicitPortFallback = true;
+    this.logger.warn(`[dsh] ${URL_LINE_TIMEOUT_MS / 1000}s 内没等到内核的 URL 行，`
+      + '退回自选端口方式重试（上游可能改了输出格式）');
+    const child = this.child;
+    this.child = null;
+    this.#stderrTail = '';
+    this.#stdoutBuffer = '';
+    if (child) {
+      child.removeAllListeners('exit');
+      child.kill();
+    }
+    void this.#launch();
+  }
+
+  /**
+   * 起一次内核进程（定端口 → spawn → 挂事件 → 轮询就绪）。
+   *
+   * **端口交给内核自己申请（`--port 0`）。** 老做法是父进程探一个空闲端口、把号码
+   * 交给子进程去 bind，这中间有固有的时间差：探测成功不代表几秒后内核 bind 时还能
+   * 绑上。用户实测报过 `listen EACCES 127.0.0.1:53389` —— Windows 上 loopback bind
+   * 报 EACCES 的典型原因是端口落进了系统保留区间，而 Hyper-V / WSL2 / Docker 会
+   * **动态**预留大段端口（一台真实机器上实测有 60 段、约占动态端口范围的 37%，
+   * 而且是按需分配、随时新增的）。换成 --port 0 之后，端口由内核进程在 bind 那一刻
+   * 向系统申请，系统天然跳过保留段，这个交接窗口整个消失。
+   *
+   * 绑定失败仍然保留「换端口重试」这条兜底（EADDRINUSE 理论上还可能发生），而且
+   * **绝不能把它当成「内核坏了」**：那会触发上层的用户内核弃用逻辑，把一个好端端的
+   * 热更新内核删掉，然后回退的内置内核撞上同一个端口问题继续失败。
+   */
+  async #launch() {
+    const nodeExe = /** @type {string} */ (this.#nodeExe);
+    const binJs = /** @type {string} */ (this.#binJs);
+    // 默认让**内核自己**申请端口（--port 0）：端口由内核进程在 bind 那一刻向系统
+    // 要，系统天然会跳过保留区间，交接窗口不复存在。实际端口从内核打印的
+    // `dsh web: http://127.0.0.1:<port>` 那行读回来（#scanStdout 一直在解析它）。
+    //
+    // #explicitPortFallback 是退路：万一哪天上游改了那行的格式，我们就拿不到端口，
+    // 只能退回「自己探一个端口交给内核」的老做法（#fallbackToExplicitPort 触发）。
+    const port = this.#explicitPortFallback ? await findFreePort() : 0;
+    this.url = port ? `http://127.0.0.1:${port}` : null;
     const args = [binJs, 'web'];
 
     // 插件激活：走 dsh 官方的 `--patch` overlay，不再改发行包自带的 bundle patch。
@@ -113,17 +181,32 @@ class DshService extends EventEmitter {
       // 触发用户内核回退与「启动失败」弹框。就绪「后」崩溃则通过 exit 的 crashed
       // 标记交给外层处理 —— 早期版本在这里什么都不做，用户只会看到一个黑屏。
       if (crashed && !this.ready) {
-        this.emit('error', new Error(
+        // 端口绑不上：换个端口重来，别把它当成内核损坏（见 #launch 的注释）。
+        if (isPortBindFailure(detail) && this.#bindRetries < MAX_BIND_RETRIES) {
+          this.#bindRetries += 1;
+          this.logger.warn(
+            `[dsh] 端口绑定失败（第 ${this.#bindRetries} 次），换端口重试：${firstBindErrorLine(detail)}`
+          );
+          this.child = null;
+          this.#stderrTail = '';
+          this.#stdoutBuffer = '';
+          void this.#launch();
+          return;
+        }
+        const err = new Error(
           `dsh 内核启动失败（code=${code}${signal ? ` signal=${signal}` : ''}）` +
           (detail ? `\n${detail}` : '')
-        ));
+        );
+        // 打上标记：上层据此区分「内核坏了」（该弃用用户内核）与「端口绑不上」
+        // （换台机器上的环境问题，删内核只会白白让用户重下一次）。
+        if (isPortBindFailure(detail)) /** @type {any} */ (err).code = 'port-bind-failed';
+        this.emit('error', err);
       }
       this.emit('exit', { code, signal, crashed, detail });
       this.child = null;
     });
 
     this.#pollReady();
-    return this;
   }
 
   #stdoutBuffer = '';
@@ -169,11 +252,22 @@ class DshService extends EventEmitter {
    */
   #pollReady() {
     const deadline = Date.now() + 30000;
-    const url = this.url;
+    // URL 行一直不来的兜底期限（见 #launch：--port 0 时端口只能从这行拿到）。
+    const urlDeadline = Date.now() + URL_LINE_TIMEOUT_MS;
     const attempt = () => {
       if (this.stopped || this.ready) return;
       // 子进程已经退出：不可能再就绪，交给 exit 处理器报错，别空等到超时。
       if (!this.child) return;
+      // --port 0 时端口由内核自己选，要等它把 URL 行打出来才知道打哪儿。
+      const url = this.url;
+      if (!url) {
+        if (Date.now() > urlDeadline) {
+          this.#fallbackToExplicitPort();
+          return;
+        }
+        this.#schedule(deadline, attempt);
+        return;
+      }
       const req = http.get(url + '/', (res) => {
         res.resume();
         // 5xx 说明内核还没准备好（或已经坏了），继续等。
@@ -181,7 +275,7 @@ class DshService extends EventEmitter {
           this.#schedule(deadline, attempt);
           return;
         }
-        this.#confirmReady(url);
+        this.#confirmReady(/** @type {string} */ (url));
       });
       req.on('error', () => this.#schedule(deadline, attempt));
       req.setTimeout(2000, () => {

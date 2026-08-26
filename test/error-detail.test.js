@@ -88,3 +88,61 @@ test('maxLines 限制输出长度', () => {
 test('自定义兜底文案', () => {
   assert.strictEqual(summarizeStderr('', { fallback: '无输出' }), '无输出');
 });
+
+// 端口绑不上是**用户自己能解决**的少数几类故障之一（系统保留端口段 / 安全软件），
+// 所以它不能被压成一句 loader entry 术语 —— 这几条锁住那份人话提示。
+// 现场原文（用户反馈）：一整条 cordis loader 链，最后一句才是真因。
+const REAL_BIND_FAILURE = [
+  'Error: failed to apply loader entry include (cordis:include):',
+  '  [cause]: Error: failed to apply loader entry webserver (@deepseek-ai/dsh-host-webserver):',
+  '  [cause]: Error: listen EACCES: permission denied 127.0.0.1:53389',
+  '    at Server.setupListenHandle [as _listen2] (node:net:1939:21)',
+].join('\n');
+
+test('端口绑定失败：说人话，并把原始那行留在末尾', () => {
+  const out = summarizeStderr(REAL_BIND_FAILURE);
+  assert.match(out, /端口/);
+  // 必须给出用户能动手的线索，而不是只说"失败了"
+  assert.match(out, /excludedportrange/);
+  assert.match(out, /listen EACCES: permission denied 127\.0\.0\.1:53389/);
+  // 不能把 loader entry 那串术语当成主要内容抛给用户
+  assert.doesNotMatch(out.split('\n')[0], /loader entry/);
+});
+
+test('端口被占用与权限拒绝给的是不同的话', () => {
+  const busy = summarizeStderr('Error: listen EADDRINUSE: address already in use 127.0.0.1:5173');
+  assert.match(busy, /占用/);
+  const denied = summarizeStderr(REAL_BIND_FAILURE);
+  assert.match(denied, /拒绝访问/);
+});
+
+test('普通启动失败不会被误判成端口问题', () => {
+  const out = summarizeStderr('Error: Cannot find module "@deepseek-ai/dsh-git"');
+  assert.doesNotMatch(out, /端口/);
+});
+
+// isPortBindFailure 决定一个很贵的分支：判错会让上层把用户的热更新内核当成损坏品
+// 弃用掉（index.js 的回退分支），所以正反两个方向都要锁住。
+const { isPortBindFailure, firstBindErrorLine } = require('../src/shared/error-detail');
+
+test('isPortBindFailure：两种绑定失败都认，其它启动失败一律不认', () => {
+  assert.strictEqual(isPortBindFailure('Error: listen EACCES: permission denied 127.0.0.1:53389'), true);
+  assert.strictEqual(isPortBindFailure('Error: listen EADDRINUSE: address already in use 127.0.0.1:51234'), true);
+  // 模块解析失败是「内核真的坏了」，必须落到回退分支，不能被误判成端口问题
+  assert.strictEqual(isPortBindFailure('Error [ERR_MODULE_NOT_FOUND]: Cannot find package'), false);
+  assert.strictEqual(isPortBindFailure(''), false);
+  assert.strictEqual(isPortBindFailure(null), false);
+  assert.strictEqual(isPortBindFailure(undefined), false);
+  // 只是提到了 EACCES 但不是 listen 出来的（比如读文件权限），不算端口问题
+  assert.strictEqual(isPortBindFailure('Error: EACCES: permission denied, open .../config.yaml'), false);
+});
+
+test('firstBindErrorLine：从一大段 cause 链里只取那条 listen 行', () => {
+  const detail = [
+    'Error: dsh: plugin tree failed to load: failed to apply loader entry include (cordis:include):',
+    '  [cause]: Error: listen EADDRINUSE: address already in use 127.0.0.1:51234',
+    '    at Server.setupListenHandle (node:net:1939:21)',
+  ].join('\n');
+  assert.strictEqual(firstBindErrorLine(detail), 'listen EADDRINUSE: address already in use 127.0.0.1:51234');
+  assert.strictEqual(firstBindErrorLine('看不出原因'), 'listen 失败');
+});

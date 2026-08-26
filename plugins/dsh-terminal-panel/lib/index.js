@@ -1,5 +1,5 @@
 import { Service } from "@deepseek-ai/cordis";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -301,6 +301,8 @@ async function handleSessions(ctx, req, res) {
   const list = [...sessions.values()].map((s) => ({
     id: s.id,
     token: s.token,
+    // 浏览器半用它给命令历史分桶（按工作区存，不能按会话 id 存）。
+    workspaceId: s.workspaceId,
     cwd: s.cwd,
     shellKind: s.shellKind,
     state: s.state,
@@ -351,7 +353,7 @@ async function handleSession(ctx, req, res) {
     timer: null
   };
   sessions.set(session.id, session);
-  return sendJson(res, 200, { ok: true, data: { id: session.id, token: session.token, cwd: session.cwd, shellKind: session.shellKind } });
+  return sendJson(res, 200, { ok: true, data: { id: session.id, token: session.token, workspaceId: session.workspaceId, cwd: session.cwd, shellKind: session.shellKind } });
 }
 
 async function handleExec(ctx, req, res) {
@@ -644,6 +646,97 @@ async function handleComplete(ctx, req, res) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// 在系统终端中打开
+// ---------------------------------------------------------------------------
+// 面板里跑不了交互式程序（vim、sudo 密码、npm init 的问答），这是命令控制台的
+// 硬边界。与其让用户卡在那儿，不如给个台阶：一键用**会话当前的 cwd**（不是工作区
+// 根目录 —— 用户可能已经 cd 到很深的地方了）拉起系统自带的终端。
+//
+// 用 spawn + detached + unref：拉起来的终端不能是内核进程的子进程，否则内核退出
+// 会把它一起带走，而且 stdio 挂着会让父进程等它。
+
+/** 拉起系统终端，返回是否成功起来了（起不来才算失败，退出码不作数）。 */
+function openSystemTerminal(cwd) {
+  const platform = process.platform;
+  /** @type {Array<{ cmd: string, args: string[] }>} */
+  let candidates;
+  if (platform === "win32") {
+    candidates = [
+      // Windows Terminal（Win11 自带；-d 指定起始目录）
+      { cmd: "wt.exe", args: ["-d", cwd] },
+      // 回退：直接起 PowerShell。detached 在 Windows 上会给子进程分配新控制台窗口。
+      { cmd: "powershell.exe", args: ["-NoLogo", "-NoExit"] }
+    ];
+  } else if (platform === "darwin") {
+    candidates = [{ cmd: "open", args: ["-a", "Terminal", cwd] }];
+  } else {
+    candidates = [
+      { cmd: "x-terminal-emulator", args: [] },
+      { cmd: "gnome-terminal", args: [] },
+      { cmd: "xterm", args: [] }
+    ];
+  }
+
+  return new Promise((resolve, reject) => {
+    const tryNext = (index) => {
+      if (index >= candidates.length) {
+        reject(new Error("未找到可用的系统终端"));
+        return;
+      }
+      const { cmd, args } = candidates[index];
+      let settled = false;
+      let child;
+      try {
+        child = spawn(cmd, args, { cwd, detached: true, stdio: "ignore", windowsHide: false });
+      } catch {
+        tryNext(index + 1);
+        return;
+      }
+      child.on("error", (error) => {
+        // ENOENT = 这个终端在这台机器上不存在，换下一个候选。其它错误同样换，
+        // 反正候选列表末尾还有兜底。
+        if (settled) return;
+        settled = true;
+        void error;
+        tryNext(index + 1);
+      });
+      // 起进程是异步的，error 事件要到下一轮 tick 才可能来；给一小段时间，
+      // 没报错就认为起来了（终端窗口的生命周期跟我们无关，不能等它退出）。
+      setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        child.unref();
+        resolve();
+      }, 300);
+    };
+    tryNext(0);
+  });
+}
+
+async function handleOpenExternal(ctx, req, res) {
+  if (req.method !== "POST") return sendJson(res, 405, fail("method-not-allowed", "POST only"));
+  if (!requireJson(req)) return sendJson(res, 415, fail("unsupported-media-type", "Content-Type 必须是 application/json"));
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    return sendJson(res, 200, fail("bad-request", "请求体不是合法 JSON"));
+  }
+  const session = resolveSession(body.id, body.token);
+  if (!session) return sendJson(res, 403, fail("forbidden", "会话不存在或 token 无效"));
+  // cwd 可能已经被删掉（用户在别处 rm 了这个目录），起终端前先确认。
+  if (!fs.existsSync(session.cwd)) {
+    return sendJson(res, 200, fail("path-not-found", "当前目录不存在，可能已被移动或删除"));
+  }
+  try {
+    await openSystemTerminal(session.cwd);
+    return sendJson(res, 200, { ok: true });
+  } catch (error) {
+    return sendJson(res, 200, fail("open-failed", error?.message ?? "无法打开系统终端"));
+  }
+}
+
 const ROUTES = [
   ["/api/terminal/sessions", handleSessions],
   ["/api/terminal/session", handleSession],
@@ -651,6 +744,7 @@ const ROUTES = [
   ["/api/terminal/signal", handleSignal],
   ["/api/terminal/close", handleClose],
   ["/api/terminal/complete", handleComplete],
+  ["/api/terminal/open-external", handleOpenExternal],
   // clear 不在任务书的路由表里，但 UI 明确要求 Ctrl+L「通知 node 半重置环形缓冲」。
   ["/api/terminal/clear", handleClear],
   ["/api/terminal/stream", handleStream]

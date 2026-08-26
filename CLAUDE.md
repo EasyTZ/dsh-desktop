@@ -24,7 +24,7 @@ L4  桌面外壳      Electron 主进程                    纯我们的，上�
 L3  壳↔内核的桥   preload + IPC                      越薄越好，能挤进 L2 就挤
     自定义标题栏、updater UI
 L2  桌面特有能力  dsh 插件（走官方扩展点）            我们的代码，跑在上游进程里
-    余额显示（dsh-ui-balance）、原生集成…
+    余额显示、Git 面板、终端面板、在资源管理器中打开…
 L1  内核          @deepseek-ai/dsh registry 发行包    只读，一个字节都不改
 ```
 
@@ -59,7 +59,8 @@ README 原文：*"iterating rapidly. **THERE WILL BE COMPATIBILITY-BREAKING CHAN
 ### 已知偏离（待收敛）
 
 1. `src/preload/index.js` 的自定义标题栏用 `#root{padding-top: TITLEBAR_HEIGHT}` 把整页面推低。「悬浮透明层」（不占布局、叠在 dsh 页面顶部）方案试过：视觉上更好看，但标题栏区域是 `-webkit-app-region:drag`，dsh 某页顶部若有真实内容会被盖住/挡住点击——实测命中会话页右上角的「Session log 下载」按钮（`@deepseek-ai/dsh-session-log-export`，注册在 `conversation.session.header.utilities`），且这个冲突是 dsh 自己的布局导致的，标题栏缩窄也躲不开。曾考虑用 `--patch` overlay 的 `disabled: true` 只关掉这一个内置条目（dsh 自己关遥测就是这么干的，技术可行），但它和 `/export` 命令共用同一个 fiber，关条目会连命令一起关掉，最终选择保留功能、退回 padding-top。代价：侧边栏顶部留白 = dsh 自己的留白 + 我们这一份，比悬浮方案明显更大——这是权衡后接受的，不是待修的 bug。标题栏背景仍然分两段：左段用 `[class*="sidebarCol"]` 弱耦合匹配侧边栏、`ResizeObserver` 跟踪宽度，颜色取 `--dsw-specific-sidebar-fill`；右段固定 `--dsw-alias-bg-base`。两者是 dsh 里不同的底色 token，标题栏必须跟着分段，用统一背景色会在侧边栏交界处露出色差（曾经改成统一色，被这条绊了一次）。探测失败（15s 超时）会经 `titlebar:sidebar-probe-failed` 让主进程记一行日志，不会无声失败，但耦合本身还在，是这条里最典型的「该往 L2 挤」的债。
-2. 向上游提 slot PR（各 UI 包声明了几十个槽，但没有窗口 chrome 的），落地后标题栏从 L3 的 DOM 注入变成 L2 的客户端插件，上面那条连同 padding-top 一起消失。
+2. `plugins/dsh-terminal-panel/lib/client.js` 的样式里有一条 `[class*="footerActions"]{flex-direction:column}`，是**第二处**对上游 CSS Modules 类名的弱耦合（第一处就是上面标题栏那条）。起因：`sidebar.footer.action` 的容器在上游是默认横向的 flex，Git 与终端两个按钮会被挤成同行的半宽按钮。上游一改名，两个按钮就无声地挤回一行 —— 插件挂载时会探测一次，匹配不到在浏览器控制台留一行 `console.warn`（`probeFooterContainer`），但只有开控制台的人看得见，比标题栏那条（走 IPC 进主进程日志）弱。收敛路径同样是上游给一个「footer action 排列方向」的契约，或干脆自己不改布局、把两个入口合并成一个。
+3. 向上游提 slot PR（各 UI 包声明了几十个槽，但没有窗口 chrome 的），落地后标题栏从 L3 的 DOM 注入变成 L2 的客户端插件，第 1 条连同 padding-top 一起消失。
 
 ### 跨平台
 
@@ -178,9 +179,40 @@ test/         node:test 用例
 - **绝不要再往发行包的 `cordis.patch.yml` 里写东西**。`- insert:` 不去重：bundle 里有一条、overlay 再给一条，cordis loader 会抛 `duplicate loader entry id` 让内核**秒退**，与 v1.1.1 同一类致命失败。v1.2.0 从 v1.1.x 升级时，用户 `%APPDATA%` 里被老版本篡改过的热更新内核就会撞上这个 —— 靠「秒退 → 删用户内核 → 回退内置 → 静默重启」自愈，代价是重下一次内核。
 - **`_verify` 必须带 overlay**。不带就是验了一个「没有插件的内核」，而真正启动是带着 overlay 跑的 —— 插件加载阶段的崩溃会整个溜过自检。
 
+### 现有的四个插件
+
+| 目录 | entryId | 干什么 | 接入的槽 |
+|---|---|---|---|
+| `dsh-ui-balance` | `balance` | 每条回复下方显示 DeepSeek 余额 | `conversation.chat.turnTail` |
+| `dsh-git` | `git` | Git 面板（改动/暂存/提交/推送/切分支/撤销） | `sidebar.footer.action`（`order: 100`）+ `shell.overlay` |
+| `dsh-terminal-panel` | `terminal-panel` | 终端面板（命令控制台） | `sidebar.footer.action`（`order: 90`）+ `shell.overlay` |
+| `dsh-reveal-explorer` | `reveal-explorer` | 在系统文件管理器中打开工作区 | `conversation.session.header.utilities` |
+
+**槽的两条通用规则**（翻上游类型声明与 frontend bundle 得来）：
+
+- `list` 槽排序是 `(priority ?? 0)` 然后 `(order ?? 0)`，**都是升序，数字小的在上面**。`order` 是排位用的，`priority` 是遮蔽（shadowing）用的，别拿 `priority` 调顺序。
+- **`shell.overlay` 默认 click-through**，条目必须自己 opt back into pointer events；而**关闭态必须 `pointer-events:none`** —— `opacity:0` 的元素照样拦点击，漏了这条就是「面板关着却点不动底下的 dsh」。`details` 与 `sidebar` 是 `single` 槽且已被上游占用，注册进去会替换整列，**禁用**。
+
+### 终端面板的几条硬知识（都是实测踩出来的）
+
+- **它不是 PTY，是命令控制台**。上游的 PTY seam（`ctx.terminals`）要 `Agent` 做 owner、没有 resize，而且 web bundle 根本没 compose 它；`ShellProcess` 也没有写 stdin 的方法。所以 `vim` / `sudo` 密码 / `npm init` 问答跑不了 —— 这是设计边界，UI 里明说了，并给了「在系统终端中打开」当台阶。真要做满血版，验证过的路线是「PTY 放主进程（node-pty 是 N-API，Electron 里免重编，已实测）+ 自己的终端页面」，不是把它塞回内核。
+- **`ctx.shell` 的 `readOutput()` 把 stderr 拼在 stdout 后面，用字面量 `[stderr]` 单独一行分隔**（pwsh-local / bash-local 的实现逐字相同）。不解析就会把这行当成输出显示；stdout/stderr 的真实交错顺序**拿不到**，只能按轮询批次近似。这是上游的**私有实现细节**，随时可能变 —— 属于我们主动接受的耦合。
+- **每条命令是一个独立进程**，所以 `cd` 不会自然保留：cwd 与退出码靠追加在用户命令**末尾**的哨兵（RS 字符包裹）带回来。两个坑：哨兵**会被 delta 从中间切断**，解析必须是跨 delta 的状态机（见 `lib/pure.js`）；退出码必须哨兵自己带 —— 我们追加了语句，进程退出码已经不是用户命令的退出码了。
+- **沙箱显式传 `danger-full-access`**。沙箱是用来约束**模型**的，用户自己敲 Enter 的命令不该被关起来；`ctx.shell` 的 `resolve` 尊重调用方传的 `sandboxPolicy`。
+- **Windows 上是 `pwsh -NoLogo -NoProfile -NonInteractive`、mac 上是 `bash -c`**（不是 zsh，也不读 rc 文件）—— 这是 `dsh-base` bundle 按平台切 executor 的结果，不是我们选的。macOS 还有 PATH 塌陷问题（GUI 启动的 Electron 只继承到 `/usr/bin:/bin`），插件里有 best-effort 的登录 shell 探测兜着，彻底的修法在 L4。
+- **Tab 补全是我们自己算的**（读目录 + 扫 PATH，不起 shell 进程 —— 起一个 PowerShell 实测近 300ms，按一次 Tab 等半秒没法用）。切词唯一的平台差异：POSIX 认反斜杠转义，**Windows 绝不能认**（`C:\Users\x` 会被啃掉一半）。
+- **输入框全程可编辑，运行中也不要 `disabled` / `readOnly`**：`disabled` 的控件收不到键盘事件，会让 Ctrl+C 中断**整个失效**；`readOnly` 置灰则被用户当成「输入框失焦了」。两条都是实机反馈推翻过的写法。
+- **吸底滚动的 effect 不能挂依赖数组**：新行是就地 `push` 到 view 对象上的（SSE handler 直接改 `view.lines` 再强制重渲染），`views` / `activeView` 的引用自始至终不变，挂了依赖数组它只在挂载时跑一次，表现是「有输出但视图一直停在顶部」。同理，行的 `key` 要用稳定 id 而不是数组下标，否则每来一行整个窗口的节点全量 diff。
+
+### 客户端半怎么测
+
+`plugins/*/lib/client.js` **不在 `npm run typecheck` 的 `include` 里**，`node --check` 又只查语法。`useCallback` / `useEffect` 的依赖数组在 render 时立即求值，引用一个后面才声明的 `const` 会触发 TDZ、组件整个渲染崩溃 —— 表现就是「面板打不开」，而这类错误只有真实执行组件函数才会暴露。`test/terminal-client-smoke.test.js` 就是这道防线：在 node 里伪造 `window` / React，真跑一遍 factory、`apply()` 与两个槽组件的渲染路径。新写客户端插件时照抄它。
+
+纯逻辑（行模型、ANSI、哨兵、补全切词）另外放在 `lib/pure.js`：**零 import**，`test/` 可以直接 `import`，也因此会被 tsc 顺带检查。
+
 ### 写一个 dsh 插件
 
-参照 `plugins/dsh-ui-balance/`。dsh 插件是**双面**的，两半在不同进程里跑，`package.json` 同时声明：
+最小参照 `plugins/dsh-ui-balance/`，带面板与多路由的完整参照看 `plugins/dsh-git/`。dsh 插件是**双面**的，两半在不同进程里跑，`package.json` 同时声明：
 
 ```jsonc
 {

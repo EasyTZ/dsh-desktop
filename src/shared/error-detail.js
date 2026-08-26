@@ -31,6 +31,24 @@ function summarizeStderr(detail, opts = {}) {
   const text = String(detail ?? '').trim();
   if (!text) return fallback;
 
+  // 端口绑不上单独说人话。原文长这样：
+  //   failed to apply loader entry webserver (@deepseek-ai/dsh-host-webserver):
+  //   listen EACCES: permission denied 127.0.0.1:53389
+  // 照原样展示的话，用户只会看到一串 loader entry 术语，完全猜不到跟端口有关，
+  // 更猜不到该怎么办 —— 而这恰恰是**用户自己能解决**的少数几类故障之一。
+  const bind = /listen\s+(EACCES|EADDRINUSE)[^\n]*/i.exec(text);
+  if (bind) {
+    const isBusy = /EADDRINUSE/i.test(bind[0]);
+    return [
+      isBusy ? '内核要用的本地端口被别的程序占用了。' : '内核无法绑定本地端口（系统拒绝访问）。',
+      '已经自动换端口重试过几次，仍然失败。常见原因：',
+      '· Hyper-V / WSL2 / Docker 预留了大段端口（管理员运行 `netsh interface ipv4 show excludedportrange protocol=tcp` 可以查看）',
+      '· 安全软件拦截了本机回环端口的监听',
+      '重启电脑通常能让保留区间重新分配；若长期复现，请把上面那条命令的输出反馈给我们。',
+      bind[0].trim(),
+    ].join('\n');
+  }
+
   const seen = new Set();
   const kept = [];
   for (const raw of text.split(/\r?\n/)) {
@@ -68,4 +86,31 @@ function summarizeStderr(detail, opts = {}) {
   return text.split(/\r?\n/).slice(-maxLines).join('\n');
 }
 
-module.exports = { summarizeStderr };
+/**
+ * 内核是不是「端口绑不上」而退出的。
+ *
+ * 放在 shared 而不是 dsh-service：它是纯字符串判定，放这里才能单测，而这段逻辑
+ * 决定了一个很贵的分支 —— 判错会让上层把用户辛苦下下来的热更新内核当成损坏品
+ * 弃用掉（见 index.js 的回退分支）。
+ *
+ * EACCES：Windows 上 loopback bind 报权限拒绝，典型原因是端口落进系统保留区间
+ * （Hyper-V / WSL2 / Docker 会动态预留大段端口），也可能是安全软件拦截。
+ * EADDRINUSE：我们探测端口与内核真正 bind 之间被别的进程抢走了。
+ * 两者都跟内核本身无关，换个端口通常就好。
+ *
+ * @param {string|undefined|null} detail 内核 stderr
+ */
+function isPortBindFailure(detail) {
+  return /listen\s+(EACCES|EADDRINUSE)/i.test(String(detail ?? ''));
+}
+
+/**
+ * 取 stderr 里那条 bind 报错本身，用于日志（整段 stderr 有几十行，日志里只留关键一行）。
+ * @param {string|undefined|null} detail
+ */
+function firstBindErrorLine(detail) {
+  const m = /listen\s+(?:EACCES|EADDRINUSE)[^\n]*/i.exec(String(detail ?? ''));
+  return m ? m[0].trim() : 'listen 失败';
+}
+
+module.exports = { summarizeStderr, isPortBindFailure, firstBindErrorLine };
