@@ -64,7 +64,7 @@ window.__ModuleLoader__.load({
 			".dspmSwitch:disabled{cursor:default;opacity:.55}",
 			".dspmSwitchKnob{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:999px;background:var(--dsw-alias-label-primary,#f9fafb);transition:transform .15s ease}",
 			".dspmSwitch[data-on=" + JSON.stringify("true") + "] .dspmSwitchKnob{transform:translateX(14px)}",
-			".dspmBannerWarn{color:var(--dsw-alias-state-warning-primary,#e5a13a);font-size:12.5px;line-height:1.6;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.1));border-radius:8px;padding:8px 12px;background:var(--dsw-alias-bg-layer-1,#151517)}",
+			".dspmBannerWarn{color:var(--dsw-alias-state-warn-primary,#e5a13a);font-size:12.5px;line-height:1.6;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.1));border-radius:8px;padding:8px 12px;background:var(--dsw-alias-bg-layer-1,#151517)}",
 			".dspmBannerErr{color:var(--dsw-alias-state-error-primary,#f0617a);font-size:12.5px;line-height:1.6;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.1));border-radius:8px;padding:8px 12px;background:var(--dsw-alias-bg-layer-1,#151517)}",
 			// 待重启条常驻（0 改动时显示「没有待生效的改动」，给用户一个明确的
 			// 「当前已同步」信号）；有改动时长出重启按钮。
