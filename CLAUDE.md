@@ -78,7 +78,10 @@ README 原文：*"iterating rapidly. **THERE WILL BE COMPATIBILITY-BREAKING CHAN
 npm start                # 开发态运行：外壳 spawn 本机全局 dsh
 npm test                 # 单元测试（node:test 内置，零第三方依赖）
 npm run typecheck        # tsc --checkJs 静态检查（noEmit，不产出编译结果）
-npm run install-plugin   # 把 plugins/ 下的自定义插件装进「本机全局 dsh」
+npm run install-plugin   # 把清单里的插件装进「本机全局 dsh」（顺带清理改名/下架的遗留）
+npm run link-plugins     # 联调：node_modules/<插件> → 同级工作副本 ../<插件>
+npm run unlink-plugins   # 解除联调，按 package.json 的 pin 恢复
+npm run plugins-status   # 看插件当前是「钉 tag」还是「联调」
 npm run prepare-kernel   # 复制 node.exe + pnpm + 全局 dsh 依赖树到 kernel/
 npm run dist             # install-plugin → prepare-kernel → electron-builder --win → collect-release
 npm run dist:dir         # 同上但只出 win-unpacked（快速验证打包态）
@@ -97,8 +100,12 @@ npm run icon             # 仅在改了 build/logo.svg 后重新生成 icon.png/
 
 四个通用插件已拆成独立仓库（`EasyTZ/dsh-git`、`dsh-terminal-panel`、`dsh-ui-balance`、`dsh-reveal-explorer`），本仓库通过 `package.json` 里的 git 依赖（**钉 tag，不钉分支**——钉分支会让打包不可复现）vendor 进 `node_modules/`。改插件代码的两种方式：
 
-- **只想验证**：改完插件仓库 → push + 打 tag → 回本仓库把 `package.json` 里对应的 `#tag` 升一下 → `npm install`。
-- **高频联调**（推荐）：把本仓库 `node_modules/<插件名>` 换成插件仓库工作副本的链接或 `file:` 依赖——`npm link ../dsh-git`（或把根依赖临时改成 `"dsh-git": "file:../dsh-git"`），改完立刻能测，不用每次 push/tag。**只在真正发版时才 push + 打 tag**，然后回本仓库更新钉住的版本号。
+- **发版**：改完插件仓库 → push + 打**新** tag（不要复用旧 tag，npm 会拿缓存里的旧内容）→ 回本仓库把 `package.json` 里对应的 `#tag` 升一下 → `npm install`。
+- **高频联调**：`npm run link-plugins` 把 `node_modules/<插件名>` 换成指向同级工作副本（`../<插件名>`）的 junction，改完跑 `npm run install-plugin` 就生效，不用 push/tag。`npm run plugins-status` 看当前处于哪种模式，`npm run unlink-plugins` 解除并按 pin 恢复。
+
+链接**只换 `node_modules` 里那一个目录，不动 `package.json` / lockfile**——那两个文件是发版凭据，必须始终写着钉住的 tag，不能被联调改脏或误提交。Windows 上用 junction 而非 symlink：前者不需要管理员权限。
+
+`dist` / `dist:dir` 的第一步是 `verify-plugin-pins.mjs`，检测到任何插件仍是链接就**直接失败**。这不是洁癖：`install-plugin` 与 `pack-plugins` 都带 `dereference` 拷贝，联调模式下它们会把工作副本**当前的内容**（含未提交改动）摊进内核和安装包，而版本号仍写着 tag 的号——产物自称 v0.1.1、内容却不是 GitHub 上的 v0.1.1，事后既复现不了也追溯不了。检查一个符号链接就够了：不是链接就说明那份是 npm 按 lockfile 从钉住的 commit 拉的，本身可复现。
 
 拆仓带来的两个**主动接受的代价**（不是待修 bug）：
 

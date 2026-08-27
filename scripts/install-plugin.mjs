@@ -19,12 +19,17 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findDshInstallSync } from '../src/shared/dsh-locate.js';
-import { loadPluginManifest, installPlugin, resolvePluginSrcDir } from '../src/shared/plugin-install.js';
+import { loadPluginManifest, installPlugin, cleanupLegacyPlugins, resolvePluginSrcDir } from '../src/shared/plugin-install.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pluginsDir = join(root, 'plugins');
-const nodeModulesDir = join(root, 'node_modules');
+// 两个 node_modules 别搞混（这里曾经因为共用一个含糊的变量名接错过参数）：
+//   vendorDir  —— 本仓库的，git 依赖 vendor 进来的插件**源码**，只读取
+//   dshModules —— 全局 dsh 的，插件要被装进去的**目标**，会被写入和删除
+const vendorDir = join(root, 'node_modules');
 const installDir = findDshInstallSync();
+const dshModules = join(installDir, 'node_modules');
+const dshManifest = join(installDir, 'package.json');
 
 console.log(`[install-plugin] dsh: ${installDir}`);
 
@@ -34,15 +39,32 @@ let failed = false;
 for (const plugin of plugins) {
   try {
     installPlugin({
-      pluginSrcDir: resolvePluginSrcDir({ pluginsDir, nodeModulesDir, packageName: plugin.packageName }),
-      nodeModulesDir: join(installDir, 'node_modules'),
-      manifestPath: join(installDir, 'package.json'),
+      pluginSrcDir: resolvePluginSrcDir({ pluginsDir, nodeModulesDir: vendorDir, packageName: plugin.packageName }),
+      nodeModulesDir: dshModules,
+      manifestPath: dshManifest,
       expectedName: plugin.packageName,
     });
   } catch (error) {
     console.error(`[install-plugin] ${plugin.packageName} 安装失败:`, error?.message ?? error);
     failed = true;
   }
+}
+
+// 清掉「装过但已不在清单里」的旧插件（改名 / 下架留下的）。放在装之后：先把当前
+// 清单该有的都装好，再按清单摘多余的，顺序反了会把刚要装的也算成多余。
+//
+// 为什么这一步必要：本脚本写的是**长期存在**的全局 dsh 安装目录，installPlugin
+// 只增不减，而 prepare-kernel 是整目录 cpSync —— 不清理的话，历史上用过的每一个
+// 包名都会一路搭车进出厂内核。（热更新那条路不需要：staging 每次都是全新的。）
+try {
+  cleanupLegacyPlugins({
+    nodeModulesDir: dshModules,
+    manifestPath: dshManifest,
+    plugins,
+  });
+} catch (error) {
+  console.error('[install-plugin] 遗留插件清理失败:', error?.message ?? error);
+  failed = true;
 }
 
 console.log(failed ? '[install-plugin] 完成（存在失败项）' : '[install-plugin] 完成');

@@ -8,6 +8,7 @@ const path = require('node:path');
 const {
   loadPluginManifest, readPluginPackage, installPlugin, registerDependency,
   renderActivationPatch, writeActivationPatch, writeSafeModePatch, resolvePluginSrcDir,
+  cleanupLegacyPlugins,
 } = require('../src/shared/plugin-install');
 
 // 插件安装必须做满两件事：拷贝源码 / 登记依赖。漏掉登记时 dsh 运行期的
@@ -205,6 +206,77 @@ test('清单里的 entryId 一律带 dsdesktop- 前缀，避免与上游 bundle 
       `entryId 必须以 dsdesktop- 开头，实际为 ${p.entryId}（见本用例注释）`,
     );
   }
+});
+
+test('cleanupLegacyPlugins: 清掉改名遗留，保留清单内的与上游的', () => {
+  const f = makeFixture();
+  const nm = path.join(f.root, 'node_modules');
+  const manifestPath = path.join(f.root, 'package.json');
+  const mk = (name) => {
+    const dir = path.join(nm, ...name.split('/'));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name }));
+  };
+  ['@deepseek-ai/dsh-git', 'dsh-git', 'dsh-plugin-manager', 'dsh-dropped',
+    '@deepseek-ai/dsh-workspace', 'commander'].forEach(mk);
+  fs.writeFileSync(manifestPath, JSON.stringify({
+    dependencies: {
+      '@deepseek-ai/dsh-git': '0.1.0',        // 改名前的遗留 → 清
+      'dsh-git': '0.1.1',                     // 清单里有 → 留
+      'dsh-plugin-manager': '0.1.0',          // 清单里有 → 留
+      'dsh-dropped': '0.1.0',                 // 我们装过但已下架 → 清
+      '@deepseek-ai/dsh-workspace': '^0.1.1', // 上游的 → 绝不能碰
+      commander: '^15.0.0',                   // 上游的 → 绝不能碰
+    },
+  }, null, 2));
+
+  const removed = cleanupLegacyPlugins({
+    nodeModulesDir: nm,
+    manifestPath,
+    plugins: [{ packageName: 'dsh-git' }, { packageName: 'dsh-plugin-manager' }],
+    logger: { log() {}, warn() {} },
+  });
+
+  assert.deepStrictEqual(removed.sort(), ['@deepseek-ai/dsh-git', 'dsh-dropped']);
+  const deps = JSON.parse(fs.readFileSync(manifestPath, 'utf8')).dependencies;
+  assert.deepStrictEqual(Object.keys(deps).sort(),
+    ['@deepseek-ai/dsh-workspace', 'commander', 'dsh-git', 'dsh-plugin-manager']);
+  assert.ok(!fs.existsSync(path.join(nm, '@deepseek-ai', 'dsh-git')), '遗留目录要删掉');
+  assert.ok(fs.existsSync(path.join(nm, 'dsh-git')), '清单内的不能删');
+  // 误删上游的包 = 内核起不来，这两条是这个函数最重要的护栏。
+  assert.ok(fs.existsSync(path.join(nm, '@deepseek-ai', 'dsh-workspace')), '上游 scoped 包不能碰');
+  assert.ok(fs.existsSync(path.join(nm, 'commander')), '上游非 scoped 包不能碰');
+
+  // 幂等：再跑一次没有可清的，且不该改写 package.json。
+  assert.deepStrictEqual(cleanupLegacyPlugins({
+    nodeModulesDir: nm, manifestPath,
+    plugins: [{ packageName: 'dsh-git' }, { packageName: 'dsh-plugin-manager' }],
+    logger: { log() {}, warn() {} },
+  }), []);
+  fs.rmSync(f.root, { recursive: true, force: true });
+});
+
+test('cleanupLegacyPlugins: 登记已摘、目录还在的孤儿也要清掉', () => {
+  // 真实踩到过：清理的第一版只遍历 dependencies，而那次运行 deps 摘对了、目录
+  // 却因为传错了 node_modules 没删成 —— 再跑一次就永远找不到它们了。所以候选
+  // 必须同时来自「登记」和「目录」两处。
+  const f = makeFixture();
+  const nm = path.join(f.root, 'node_modules');
+  const manifestPath = path.join(f.root, 'package.json');
+  fs.mkdirSync(path.join(nm, '@deepseek-ai', 'dsh-git'), { recursive: true });
+  fs.mkdirSync(path.join(nm, 'dsh-dropped'), { recursive: true });
+  fs.mkdirSync(path.join(nm, '@deepseek-ai', 'dsh-workspace'), { recursive: true });
+  // dependencies 里干干净净——只剩目录是孤儿。
+  fs.writeFileSync(manifestPath, JSON.stringify({ dependencies: { commander: '^15.0.0' } }, null, 2));
+
+  const removed = cleanupLegacyPlugins({
+    nodeModulesDir: nm, manifestPath, plugins: [], logger: { log() {}, warn() {} },
+  });
+  assert.deepStrictEqual(removed.sort(), ['@deepseek-ai/dsh-git', 'dsh-dropped']);
+  assert.ok(!fs.existsSync(path.join(nm, '@deepseek-ai', 'dsh-git')));
+  assert.ok(!fs.existsSync(path.join(nm, 'dsh-dropped')));
+  assert.ok(fs.existsSync(path.join(nm, '@deepseek-ai', 'dsh-workspace')), '上游的仍不能碰');
+  fs.rmSync(f.root, { recursive: true, force: true });
 });
 
 test('writeSafeModePatch: 只留 safeMode 插件，且不受用户状态影响', () => {

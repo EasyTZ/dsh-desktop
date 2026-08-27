@@ -168,6 +168,95 @@ function writeSafeModePatch(patchPath, plugins) {
   return patchPath;
 }
 
+/**
+ * 我们**曾经**用过、现在已经不用的插件包名。
+ *
+ * 拆仓之前四个通用插件挂在上游的 `@deepseek-ai` scope 下（那本来就是不该占的
+ * 命名空间）。改名之后旧包并不会自己消失：`installPlugin` 只做「拷贝 + 登记」，
+ * 而全局 dsh 是个长期存在、被反复写入的安装目录，旧包名就一直留在它的
+ * node_modules 与 dependencies 里，再被 `prepare-kernel` 的整目录 cpSync 一路
+ * 搭车带进出厂内核。不会出错（overlay 里写的是新名字，它们永远不被激活），但会
+ * 白白进安装包，还让 healProfilesModuleFallback 多建一批无用软链。
+ */
+const LEGACY_PLUGIN_NAMES = [
+  '@deepseek-ai/dsh-git',
+  '@deepseek-ai/dsh-ui-balance',
+  '@deepseek-ai/dsh-terminal-panel',
+  '@deepseek-ai/dsh-reveal-explorer',
+];
+
+/**
+ * 判断一个依赖名是不是「我们装的插件」。两条判据都刻意保守 —— 这个函数的输出
+ * 会被拿去删目录，误判一次就是把上游的包删掉、内核起不来：
+ *
+ *   1) 在 LEGACY_PLUGIN_NAMES 里（明确列举，只增不猜）；
+ *   2) 裸包名且以 `dsh-` 开头 —— 上游的包**全部**在 `@deepseek-ai` scope 下，
+ *      它的非 scoped 依赖只有 commander / js-yaml / node-addon-require-builtin，
+ *      没有任何 `dsh-` 开头的，所以这条不会误伤。
+ *
+ * @param {string} name
+ */
+function isOwnPluginName(name) {
+  if (LEGACY_PLUGIN_NAMES.includes(name)) return true;
+  return !name.startsWith('@') && name.startsWith('dsh-');
+}
+
+/**
+ * 清掉「我们装过、但已经不在清单里」的插件：从目标 node_modules 删目录，并从
+ * dsh 的 package.json dependencies 里摘掉登记。
+ *
+ * 只在构建期（scripts/install-plugin.mjs，写的是长期存在的全局 dsh）需要。
+ * 热更新那条路不用：`kernel-updater` 每次都是 pnpm 装一个全新的 staging 目录，
+ * 里面不可能有上一轮的残留。
+ *
+ * @param {object} opts
+ * @param {string} opts.nodeModulesDir
+ * @param {string} opts.manifestPath   dsh 的 package.json
+ * @param {Array<{packageName: string}>} opts.plugins 当前清单
+ * @param {Logger} [opts.logger]
+ * @returns {string[]} 被清掉的包名
+ */
+function cleanupLegacyPlugins({ nodeModulesDir, manifestPath, plugins, logger = console }) {
+  const keep = new Set(plugins.map((p) => p.packageName));
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const deps = manifest.dependencies ?? {};
+
+  // 候选来自**两处**，缺一不可：
+  //   - dependencies 的登记项
+  //   - node_modules 里实际存在的目录
+  // 只看登记会漏掉「登记已摘、目录还在」的孤儿（清理中途失败，或先摘登记再删
+  // 目录时被打断都会留下），而那正是我们要清的东西；只看目录则拿不到登记。
+  const candidates = new Set(Object.keys(deps).filter(isOwnPluginName));
+  for (const name of LEGACY_PLUGIN_NAMES) {
+    if (fs.existsSync(path.join(nodeModulesDir, ...name.split('/')))) candidates.add(name);
+  }
+  if (fs.existsSync(nodeModulesDir)) {
+    // 顶层只可能是裸包名（scoped 的在 @scope/ 子目录里），isOwnPluginName 的
+    // `dsh-` 前缀判据在这里同样安全：上游的包全在 @deepseek-ai scope 下。
+    for (const entry of fs.readdirSync(nodeModulesDir)) {
+      if (isOwnPluginName(entry)) candidates.add(entry);
+    }
+  }
+
+  const stale = [...candidates].filter((name) => !keep.has(name));
+  if (stale.length === 0) return [];
+
+  let depsChanged = false;
+  for (const name of stale) {
+    if (name in deps) {
+      delete deps[name];
+      depsChanged = true;
+    }
+    fs.rmSync(path.join(nodeModulesDir, ...name.split('/')), { recursive: true, force: true });
+    logger.log(`[plugin] 已清理遗留插件: ${name}`);
+  }
+  if (depsChanged) {
+    manifest.dependencies = deps;
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+  }
+  return stale;
+}
+
 /** 2) 登记进 dsh 的 package.json dependencies（幂等）。返回是否真的写入。 */
 function registerDependency(manifestPath, packageName, version) {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -225,6 +314,7 @@ module.exports = {
   renderActivationPatch,
   writeActivationPatch,
   writeSafeModePatch,
+  cleanupLegacyPlugins,
   registerDependency,
   installPlugin,
 };
