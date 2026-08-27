@@ -1,6 +1,6 @@
 {
   "name": "deepseek-desktop",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "DeepSeek Harness 桌面版 —— 以 dsh 为内核的 Windows 桌面应用",
   "main": "src/main/index.js",
   "author": "EasyTZ",
@@ -15,6 +15,7 @@
     "link-plugins": "node scripts/link-plugins.mjs",
     "unlink-plugins": "node scripts/link-plugins.mjs --off",
     "plugins-status": "node scripts/link-plugins.mjs --status",
+    "refresh-plugins": "node scripts/refresh-plugins.mjs",
     "prepare-kernel": "node scripts/prepare-kernel.mjs",
     "dist": "node scripts/verify-plugin-pins.mjs && node scripts/install-plugin.mjs && node scripts/prepare-kernel.mjs && node scripts/verify-kernel.mjs && node scripts/pack-kernel.mjs && node scripts/pack-plugins.mjs && electron-builder --win && node scripts/collect-release.mjs",
     "dist:dir": "node scripts/verify-plugin-pins.mjs && node scripts/install-plugin.mjs && node scripts/prepare-kernel.mjs && node scripts/verify-kernel.mjs && node scripts/pack-kernel.mjs && node scripts/pack-plugins.mjs && electron-builder --win --dir",
@@ -23,7 +24,7 @@
     "pack-plugins": "node scripts/pack-plugins.mjs"
   },
   "dependencies": {
-    "dsh-git": "github:EasyTZ/dsh-git#v0.1.1",
+    "dsh-git": "github:EasyTZ/dsh-git#v0.2.0",
     "dsh-reveal-explorer": "github:EasyTZ/dsh-reveal-explorer#v0.1.1",
     "dsh-terminal-panel": "github:EasyTZ/dsh-terminal-panel#v0.1.1",
     "dsh-ui-balance": "github:EasyTZ/dsh-ui-balance#v0.1.1"

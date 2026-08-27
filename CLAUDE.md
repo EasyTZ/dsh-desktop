@@ -82,6 +82,7 @@ npm run install-plugin   # 把清单里的插件装进「本机全局 dsh」（�
 npm run link-plugins     # 联调：node_modules/<插件> → 同级工作副本 ../<插件>
 npm run unlink-plugins   # 解除联调，按 package.json 的 pin 恢复
 npm run plugins-status   # 看插件当前是「钉 tag」还是「联调」
+npm run refresh-plugins  # 改了 #tag 后强制重拉（绕开 npm 的 git 依赖缓存）
 npm run prepare-kernel   # 复制 node.exe + pnpm + 全局 dsh 依赖树到 kernel/
 npm run dist             # install-plugin → prepare-kernel → electron-builder --win → collect-release
 npm run dist:dir         # 同上但只出 win-unpacked（快速验证打包态）
@@ -100,7 +101,7 @@ npm run icon             # 仅在改了 build/logo.svg 后重新生成 icon.png/
 
 四个通用插件已拆成独立仓库（`EasyTZ/dsh-git`、`dsh-terminal-panel`、`dsh-ui-balance`、`dsh-reveal-explorer`），本仓库通过 `package.json` 里的 git 依赖（**钉 tag，不钉分支**——钉分支会让打包不可复现）vendor 进 `node_modules/`。改插件代码的两种方式：
 
-- **发版**：改完插件仓库 → push + 打**新** tag（不要复用旧 tag，npm 会拿缓存里的旧内容）→ 回本仓库把 `package.json` 里对应的 `#tag` 升一下 → `npm install`。
+- **发版**：改完插件仓库 → push + 打**新** tag → 回本仓库把 `package.json` 里对应的 `#tag` 升一下 → `npm run refresh-plugins`。**别用 `npm install`**：npm 缓存 git 依赖的解析结果，改了 `#tag` 之后经常不重新拉，装出来还是上一版——表现是「代码明明改了、装完却没变化」，很容易被误当成插件本身的 bug 排查半天。`refresh-plugins` 删目录再按显式 spec 装，绕开这条缓存路径（它也会拒绝在联调模式下运行）。
 - **高频联调**：`npm run link-plugins` 把 `node_modules/<插件名>` 换成指向同级工作副本（`../<插件名>`）的 junction，改完跑 `npm run install-plugin` 就生效，不用 push/tag。`npm run plugins-status` 看当前处于哪种模式，`npm run unlink-plugins` 解除并按 pin 恢复。
 
 链接**只换 `node_modules` 里那一个目录，不动 `package.json` / lockfile**——那两个文件是发版凭据，必须始终写着钉住的 tag，不能被联调改脏或误提交。Windows 上用 junction 而非 symlink：前者不需要管理员权限。
