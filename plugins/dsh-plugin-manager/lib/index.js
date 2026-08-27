@@ -65,6 +65,34 @@ function fail(code, message) {
   return { ok: false, error: { code, message } };
 }
 
+/** 校验 POST 的 Content-Type：不是 application/json 就 415（防无 preflight 的简单请求）。 */
+function requireJson(req) {
+  const ct = String(req.headers["content-type"] ?? "").toLowerCase();
+  return ct.startsWith("application/json");
+}
+
+/**
+ * Origin 校验：存在且不等于本服务自身 origin（同端口的 http://127.0.0.1 /
+ * http://localhost）就拒绝。本服务从不发 Access-Control-Allow-Origin，所以跨源
+ * 页面拿不到响应体 —— 但「拿不到响应」不等于「发不出请求」，恶意页面还是可以用
+ * text/plain 发简单请求打本机回环端口，这条防线配合 Content-Type 检查一起关掉它。
+ *
+ * 本插件的写操作是「关掉某个插件」。拿不到响应也无所谓——攻击者不需要读回结果，
+ * 把 Git 面板或终端面板关掉就已经是有效破坏，用户下次重启才会发现。
+ */
+function originAllowed(req, port) {
+  const origin = req.headers.origin;
+  if (origin === undefined) return true;
+  let url;
+  try {
+    url = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "http:") return false;
+  return url.host === `127.0.0.1:${port}` || url.host === `localhost:${port}`;
+}
+
 function readJsonSafe(file) {
   try {
     return JSON.parse(readFileSync(file, "utf8"));
@@ -235,9 +263,26 @@ class PluginManagerService extends Service {
       this.ctx.effect(() => this.ctx.webServer.register({
         kind: "exact",
         path,
-        handler: (req, res) => handler(req, res)
+        handler: (req, res) => this.#guard(req, res, handler)
       }), `plugin-manager: ${path}`);
     }
+  }
+
+  /**
+   * 所有路由的统一入口防线。放在这里而不是各个 handler 里：这套检查的价值来自
+   * 「一条都不漏」，撒进各个 handler 就会有下一个忘记加。
+   */
+  #guard(req, res, handler) {
+    // port 在请求时动态取：webServer 是 [Service.init] 时才绑定端口，
+    // constructor 阶段读到的还是 null。
+    const port = this.ctx.webServer.port;
+    if (port != null && !originAllowed(req, port)) {
+      return sendJson(res, 403, fail("forbidden-origin", "跨源请求被拒绝"));
+    }
+    if (req.method === "POST" && !requireJson(req)) {
+      return sendJson(res, 415, fail("unsupported-media-type", "Content-Type 必须是 application/json"));
+    }
+    return handler(req, res);
   }
 }
 

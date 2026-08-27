@@ -15,12 +15,15 @@
 // 恢复用 try/finally：打包失败也要把联调恢复回去，否则人会在不知情的状态下继续
 // 开发，改半天没生效。
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { vendoredPluginNames } from '../src/shared/plugin-install.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const workspace = resolve(root, '..');
+// 「dist 解除了联调但还没恢复」的标记，见落盘处的注释。
+const UNLINK_MARKER = join(root, '.dist-unlinked');
 const dirOnly = process.argv.includes('--dir');
 const isWin = process.platform === 'win32';
 
@@ -38,8 +41,7 @@ const git = (repo, args) =>
 
 /** 当前处于联调（junction）状态的插件包名。 */
 function linkedPlugins() {
-  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-  return Object.keys(pkg.dependencies ?? {}).filter((name) => {
+  return vendoredPluginNames(root).filter((name) => {
     const dir = join(root, 'node_modules', name);
     return existsSync(dir) && lstatSync(dir).isSymbolicLink();
   });
@@ -103,6 +105,11 @@ if (linked.length > 0) {
     process.exit(1);
   }
   console.log('[dist] 核对通过：工作副本与钉住的 tag 内容一致，临时解除联调。');
+  // 先落标记再解除。`finally` 只在进程正常走完时执行，**强杀（Ctrl-C 两下 /
+  // taskkill）不会执行** —— v1.4.1 那次打包被强杀，联调就这么被静默关掉了，人
+  // 以为还开着，改半天不生效。标记文件不依赖进程善终：只要它还在，就说明恢复
+  // 那一步没跑完，install-plugin 与 plugins-status 会大声提醒。
+  writeFileSync(UNLINK_MARKER, `${new Date().toISOString()}\n${linked.join('\n')}\n`, 'utf8');
   run('link-plugins.mjs', ['--off']);
   restore = true;
 }
@@ -125,6 +132,7 @@ try {
       run('link-plugins.mjs');
       // 内核里现在装的是钉住的那份，重装一次让它指回工作副本，恢复到打包前的开发态。
       run('install-plugin.mjs');
+      rmSync(UNLINK_MARKER, { force: true });
     } catch (error) {
       console.error('[dist] 恢复联调失败，请手动执行 npm run link-plugins：', error?.message ?? error);
     }

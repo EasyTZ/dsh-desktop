@@ -9,7 +9,6 @@ const { isNewer } = require('../shared/version');
 const {
   dshManifestPath, kernelNodeModulesDir, readKernelVersion, resolvePackagedKernel,
 } = require('../shared/kernel-paths');
-const { findFreePort } = require('../shared/net');
 const { loadPluginManifest, installPlugin, resolvePluginSrcDir, writeActivationPatch } = require('../shared/plugin-install');
 const { loadPluginState } = require('../shared/plugin-state');
 
@@ -23,6 +22,33 @@ const AUTO_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 // 新内核 HTTP 通了之后再观察这么久，确认它没有在插件加载阶段随后崩溃。
 const VERIFY_SETTLE_MS = 1500;
+
+// 内核启动后打印的地址行，`--port 0` 时端口只能从这里读回来。与 DshService 用的
+// 是同一条正则（两边都在解析同一个上游输出，格式一变要一起改）。
+const URL_LINE_RE = /dsh web:\s+(https?:\/\/\S+)/;
+// 等这行出现的上限。超时说明内核连端口都没绑上，多半是启动阶段就崩了。
+const URL_LINE_TIMEOUT_MS = 20000;
+
+/**
+ * 等内核把地址行打出来。进程中途退出就立刻失败，不空等到超时 —— 那正是「新内核
+ * 起不来」最常见的样子。
+ * @param {{ value: string|null }} urlState
+ * @param {{ value: unknown }} exitState
+ * @param {number} timeoutMs
+ * @returns {Promise<string>}
+ */
+function waitUrlLine(urlState, exitState, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    const attempt = () => {
+      if (urlState.value) return resolve(urlState.value);
+      if (exitState.value !== null) return reject(new Error('进程在打印地址行之前退出'));
+      if (Date.now() > deadline) return reject(new Error('等不到内核打印地址行'));
+      setTimeout(attempt, 100);
+    };
+    attempt();
+  });
+}
 
 /**
  * 轮询 HTTP 直到就绪（<500），超时抛错。isDead 可选：进程已经退出时立刻失败，
@@ -361,18 +387,26 @@ class KernelUpdater extends EventEmitter {
     });
   }
 
+  /**
+   * 把清单里的插件全部装进新内核。**任何一个装失败，整次更新就失败。**
+   *
+   * 曾经这里是「失败就 warn 一声接着装下一个」，那会漏出一个很隐蔽的洞：
+   * 假设装失败的正好是**被用户关掉**的插件 —— 它不在 `_activationPatch` 生成的
+   * overlay 里，于是 `_verify` 起的那次自检根本不加载它，自检照样通过，新内核被
+   * 扶正。等用户哪天在插件面板里把它重新打开、重启，内核 import 一个不存在的
+   * 模块 → 秒退 → 黑屏。事故发生在装完的好几天之后，且和「更新内核」这个动作
+   * 完全对不上，基本没法排查。
+   *
+   * 「被关掉的插件也要照样装」是 installPlugin 的既定意图（见 plugin-install.js），
+   * 装不上就说明这个新内核不完整，不该扶正。失败的代价只是这次更新不生效、
+   * 继续用当前能跑的内核，比留一颗定时炸弹便宜得多。
+   */
   _installPlugins(kernelDir) {
     if (!this.pluginsDir || !fs.existsSync(this.pluginsDir)) {
       this.logger.warn('[updater] 未找到插件目录，跳过插件重装:', this.pluginsDir);
       return;
     }
-    let plugins;
-    try {
-      plugins = loadPluginManifest(this.pluginsDir);
-    } catch (error) {
-      this.logger.warn('[updater] 读取插件清单失败，跳过插件重装:', error?.message ?? error);
-      return;
-    }
+    const plugins = loadPluginManifest(this.pluginsDir);
     for (const plugin of plugins) {
       try {
         installPlugin({
@@ -387,7 +421,10 @@ class KernelUpdater extends EventEmitter {
           logger: this.logger,
         });
       } catch (error) {
-        this.logger.warn('[updater] 插件安装失败，跳过:', error?.message ?? error);
+        throw new Error(
+          `插件 ${plugin.packageName} 安装失败，新内核不完整：${error?.message ?? error}`,
+          { cause: error },
+        );
       }
     }
   }
@@ -400,14 +437,13 @@ class KernelUpdater extends EventEmitter {
    */
   _activationPatch() {
     if (!this.pluginsDir || !this.activationPatchPath) return null;
-    try {
-      return writeActivationPatch(
-        this.activationPatchPath, loadPluginManifest(this.pluginsDir), loadPluginState(this.pluginStatePath),
-      );
-    } catch (error) {
-      this.logger.warn('[updater] 生成激活 overlay 失败，自检将不含插件:', error?.message ?? error);
-      return null;
-    }
+    // 这里**不吞异常**，理由和 _installPlugins 同源：吞掉就等于「自检验的内核」
+    // 和「将来真正启动的内核」不是同一个配置 —— 自检跑的是没有插件的干净内核，
+    // 通过之后扶正，用户下次启动才带着 overlay 加载插件，崩在那时候。
+    // 只有「压根没配插件」（上面那个 return null）才是合法的无 overlay。
+    return writeActivationPatch(
+      this.activationPatchPath, loadPluginManifest(this.pluginsDir), loadPluginState(this.pluginStatePath),
+    );
   }
 
   /**
@@ -417,7 +453,6 @@ class KernelUpdater extends EventEmitter {
   async _verify(kernelDir, version) {
     const nodeExe = path.join(kernelDir, 'node.exe');
     const binJs = path.join(kernelDir, 'runtime', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
-    const port = await findFreePort();
     // 用隔离的 DSH_HOME 自检，避免与正在运行的主内核并发读写用户 profile。
     const verifyHome = path.join(path.dirname(kernelDir), '.verify-home');
     fs.rmSync(verifyHome, { recursive: true, force: true });
@@ -427,7 +462,15 @@ class KernelUpdater extends EventEmitter {
     const args = [binJs, 'web'];
     const patchPath = this._activationPatch();
     if (patchPath) args.push('--patch', patchPath);
-    args.push('--host', '127.0.0.1', '--port', String(port), '--no-open');
+    // 端口交给内核自己申请（`--port 0`），与 DshService 的正式启动路径保持一致。
+    // 这里曾经是「父进程探一个空闲端口再交给内核」，那条老路有固有的时间差：探测
+    // 成功不代表几秒后内核 bind 时还绑得上。Windows 上 Hyper-V / WSL2 / Docker 会
+    // **动态**预留大段端口（实测一台机器 60 段、约占动态端口范围的 37%），撞上就是
+    // `listen EACCES` —— v1.3.1 那个补丁版本修的正是这个。留在这条路上的后果是：
+    // 恰恰在那批机器上，内核热更新会反复自检失败、永远更新不了，而错误信息看起来
+    // 像「新内核坏了」。实际端口从内核打印的 `dsh web: http://127.0.0.1:<port>`
+    // 那行读回来。
+    args.push('--host', '127.0.0.1', '--port', '0', '--no-open');
 
     const child = spawn(nodeExe, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -438,6 +481,15 @@ class KernelUpdater extends EventEmitter {
     let stderrTail = '';
     /** @type {{ value: {code: number|null, signal: NodeJS.Signals|null}|null }} */
     const exitState = { value: null };
+    /** @type {{ value: string|null }} */
+    const urlState = { value: null };
+    let stdoutTail = '';
+    child.stdout.on('data', (d) => {
+      if (urlState.value) return;
+      stdoutTail = (stdoutTail + d.toString('utf8')).slice(-4000);
+      const m = URL_LINE_RE.exec(stdoutTail);
+      if (m) urlState.value = m[1].replace(/\/+$/, '');
+    });
     child.stderr.on('data', (d) => { stderrTail = (stderrTail + d.toString('utf8')).slice(-4000); });
     child.on('error', () => {});
     // 记录退出：自检的关键不是「端口通没通」，而是「通了之后进程还活着吗」。
@@ -454,7 +506,8 @@ class KernelUpdater extends EventEmitter {
     };
 
     try {
-      await waitHttpReady(`http://127.0.0.1:${port}`, 30000, () => exitState.value !== null);
+      const url = await waitUrlLine(urlState, exitState, URL_LINE_TIMEOUT_MS);
+      await waitHttpReady(url, 30000, () => exitState.value !== null);
       // 端口通了不代表 plugin tree 加载完成：dsh 先绑端口、后加载插件树，插件加载
       // 阶段崩溃时 HTTP 早已能应答。这里再观察一段时间确认进程没有随后崩溃 —— 否则
       // 一个坏内核会通过自检被原子切换扶正，把一次性故障变成每次启动都复现的故障。

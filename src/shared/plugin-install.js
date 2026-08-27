@@ -31,6 +31,16 @@ const path = require('node:path');
 const { isPluginEnabled, safeModePlugins } = require('./plugin-state');
 
 /**
+ * 合法的 npm 包名形状（可选 scope）。
+ *
+ * 这条正则是**路径护栏**，不是洁癖：packageName 会被 `packageName.split('/')`
+ * 摊进 path.join，然后交给 `fs.rmSync(..., { recursive: true, force: true })`
+ * —— 一个 `../..` 形状的值就能删到目标目录之外。清单目前是我们自己的可信文件，
+ * 但它同时也是「错一个字段就让内核秒退」的高危输入，护栏成本只有一行。
+ */
+const PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+
+/**
  * 读插件清单 plugins.json（单一数据源）。packageName / entryId 在这里强校验：
  * 清单字段错了会让激活条目指向不存在的模块，内核 boot 时秒退——与其让用户看
  * 黑屏，不如在装的时候就大声失败。
@@ -42,6 +52,8 @@ function loadPluginManifest(pluginsDir) {
   if (!Array.isArray(plugins)) {
     throw new Error(`plugins.json 必须是数组: ${manifestPath}`);
   }
+  const seenEntryIds = new Set();
+  const seenPackageNames = new Set();
   for (const plugin of plugins) {
     if (typeof plugin?.packageName !== 'string' || plugin.packageName.length === 0) {
       throw new Error(`plugins.json 条目缺少 packageName: ${JSON.stringify(plugin)}`);
@@ -49,8 +61,47 @@ function loadPluginManifest(pluginsDir) {
     if (typeof plugin?.entryId !== 'string' || plugin.entryId.length === 0) {
       throw new Error(`plugins.json 条目缺少 entryId: ${JSON.stringify(plugin)}`);
     }
+    if (!PACKAGE_NAME_RE.test(plugin.packageName)) {
+      throw new Error(`plugins.json 的 packageName 不是合法包名: ${JSON.stringify(plugin.packageName)}`);
+    }
+    // 重复 entryId 与「和上游 bundle 条目撞名」是同一种事故：`- insert:` 不去重，
+    // cordis loader 见到重复 id 直接抛 duplicate loader entry id，内核秒退、桌面端
+    // 黑屏。前缀规则挡的是「和别人撞」，这里挡的是「自己人内部撞」。
+    if (seenEntryIds.has(plugin.entryId)) {
+      throw new Error(`plugins.json 有重复的 entryId: ${plugin.entryId}（会让内核以 duplicate loader entry id 秒退）`);
+    }
+    // 重复 packageName 不会秒退，但会让同一个包被装两遍、激活两条，
+    // 且用户开关状态按 entryId 存 —— 两条条目指向同一份源码，开关行为无法自洽。
+    if (seenPackageNames.has(plugin.packageName)) {
+      throw new Error(`plugins.json 有重复的 packageName: ${plugin.packageName}`);
+    }
+    seenEntryIds.add(plugin.entryId);
+    seenPackageNames.add(plugin.packageName);
   }
   return plugins;
+}
+
+/**
+ * 「以 git 依赖 vendor 进来的插件」的包名列表 —— 联调 / 发版闸门 / 打包这几个
+ * 脚本共用的那份名单。
+ *
+ * 判据是**清单与 dependencies 的交集**，不是「dependencies 的全部」。后者是个
+ * 隐式约定：现在根 `dependencies` 里恰好只有四条插件，脚本才凑巧对；哪天加一个
+ * 真正的生产依赖，`link-plugins` 就会跑去 `../<那个包名>` 找工作副本，
+ * `verify-plugin-pins` 会要求它是 git 依赖 —— 都是莫名其妙的失败。
+ *
+ * `plugins/` 下的桌面专属插件（如 dsh-plugin-manager）本来就是源码，不在
+ * dependencies 里，自然被交集排除。
+ *
+ * @param {string} rootDir 本仓库根目录
+ * @returns {string[]}
+ */
+function vendoredPluginNames(rootDir) {
+  const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+  const deps = pkg.dependencies ?? {};
+  return loadPluginManifest(path.join(rootDir, 'plugins'))
+    .map((plugin) => plugin.packageName)
+    .filter((name) => name in deps);
 }
 
 /** 读插件自己的 package.json，取包名与版本。 */
@@ -86,15 +137,47 @@ function resolvePluginSrcDir({ pluginsDir, nodeModulesDir, packageName }) {
   throw new Error(`未找到插件源码: ${packageName}（找过 ${candidates.join(' ; ') || '（无候选位置）'}）`);
 }
 
+/**
+ * 拷贝插件源码时要跳过的顶层目录。
+ *
+ * 插件拆仓之后，插件仓库里开始有自己的测试与 CI 配置（`test/`、`.github/`），
+ * 而这两条安装路径都是**整目录拷贝**——不挡一下，测试文件会跟着进内核和安装包。
+ * 它们不参与运行，只增加文件数，而绿色版的解压耗时主要由文件个数决定。
+ *
+ * 只按顶层目录名匹配，不做深度匹配：插件源码就是 `lib/` 加几个元文件，规则越简单
+ * 越不会误伤（比如某天真有个 `lib/testing.js`）。
+ */
+const PLUGIN_COPY_EXCLUDE = new Set(['test', 'tests', '__tests__', '.github', '.git', 'node_modules']);
+
+/**
+ * 拷贝插件源码到 `dstDir`，跳过 PLUGIN_COPY_EXCLUDE 里的顶层目录。
+ *
+ * dereference：本地联调把 node_modules 指到插件仓库的工作副本，源码目录会是
+ * 符号链接；cpSync 默认把链接原样复制过去，内核拿到一个断链。跟随链接拷实体，
+ * 两种开发方式都不踩坑。
+ *
+ * @param {string} srcDir
+ * @param {string} dstDir
+ */
+function copyPluginTree(srcDir, dstDir) {
+  fs.rmSync(dstDir, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(dstDir), { recursive: true });
+  fs.cpSync(srcDir, dstDir, {
+    recursive: true,
+    dereference: true,
+    filter: (src) => {
+      const rel = path.relative(srcDir, src);
+      if (rel === '') return true;
+      const top = rel.split(path.sep)[0];
+      return !PLUGIN_COPY_EXCLUDE.has(top);
+    },
+  });
+}
+
 /** 1) 拷贝插件源码到目标 node_modules。 */
 function copyPluginSource(pluginSrcDir, nodeModulesDir, packageName) {
   const dst = path.join(nodeModulesDir, ...packageName.split('/'));
-  fs.rmSync(dst, { recursive: true, force: true });
-  fs.mkdirSync(path.dirname(dst), { recursive: true });
-  // dereference：本地联调常用 npm link / file: 协议把 node_modules 指到插件仓库的
-  // 工作副本，源码目录会是符号链接；cpSync 默认把链接原样复制过去，内核拿到一个
-  // 断链。跟随链接拷实体，两种开发方式都不踩坑。
-  fs.cpSync(pluginSrcDir, dst, { recursive: true, dereference: true });
+  copyPluginTree(pluginSrcDir, dst);
   return dst;
 }
 
@@ -186,14 +269,35 @@ const LEGACY_PLUGIN_NAMES = [
 ];
 
 /**
- * 判断一个依赖名是不是「我们装的插件」。两条判据都刻意保守 —— 这个函数的输出
- * 会被拿去删目录，误判一次就是把上游的包删掉、内核起不来：
+ * 我们在目标 dsh 的 package.json 里留的「装过哪些插件」账本。
  *
- *   1) 在 LEGACY_PLUGIN_NAMES 里（明确列举，只增不猜）；
- *   2) 裸包名且以 `dsh-` 开头 —— 上游的包**全部**在 `@deepseek-ai` scope 下，
- *      它的非 scoped 依赖只有 commander / js-yaml / node-addon-require-builtin，
- *      没有任何 `dsh-` 开头的，所以这条不会误伤。
+ * 为什么需要它：清理遗留插件要回答「这个包是不是我们装的」，而这个判断的输出会
+ * 被拿去 `rmSync`。原先靠启发式猜——裸包名 + `dsh-` 前缀，理由是上游的包全在
+ * `@deepseek-ai` scope 下。这个理由对上游成立，对**用户**不成立：dsh 插件生态起
+ * 来之后，用户完全可能自己 `dsh plugin add` 一个叫 `dsh-foo` 的第三方插件到同一
+ * 个全局 dsh 里，然后被我们当「遗留」删掉。我们自己就在发四个 `dsh-` 开头的插件，
+ * 等于亲手把这个命名空间做热了。
  *
+ * 记账取代猜测：装过什么就写下什么，清理只动账本上的名字。
+ */
+const PLUGIN_LEDGER_KEY = 'dsDesktopPlugins';
+
+/**
+ * 读账本；返回 null 表示这个 dsh 还没有账本（本次改动之前装的），调用方需要走
+ * 一次性的迁移路径。
+ * @param {any} manifest
+ * @returns {string[]|null}
+ */
+function readPluginLedger(manifest) {
+  const value = manifest?.[PLUGIN_LEDGER_KEY];
+  if (!Array.isArray(value)) return null;
+  return value.filter((name) => typeof name === 'string' && name.length > 0);
+}
+
+/**
+ * 仅用于**迁移**：账本还不存在时，用旧的启发式认领一次历史遗留，认完就把账本写
+ * 上，之后再不会走到这里。保守判据同旧实现：明确列举的旧名，或裸包名 + `dsh-`
+ * 前缀（上游的包全在 `@deepseek-ai` scope 下，对上游不会误伤）。
  * @param {string} name
  */
 function isOwnPluginName(name) {
@@ -221,47 +325,79 @@ function cleanupLegacyPlugins({ nodeModulesDir, manifestPath, plugins, logger = 
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const deps = manifest.dependencies ?? {};
 
-  // 候选来自**两处**，缺一不可：
-  //   - dependencies 的登记项
-  //   - node_modules 里实际存在的目录
-  // 只看登记会漏掉「登记已摘、目录还在」的孤儿（清理中途失败，或先摘登记再删
-  // 目录时被打断都会留下），而那正是我们要清的东西；只看目录则拿不到登记。
-  const candidates = new Set(Object.keys(deps).filter(isOwnPluginName));
+  const ledger = readPluginLedger(manifest);
+  /** @type {Set<string>} */
+  const candidates = new Set();
+
+  // 改名前的旧包（`@deepseek-ai/*`）在账本诞生之前就存在，两条路径都要认领：
+  // 它们是明确列举的、只增不猜的名字，认了不会误伤。
   for (const name of LEGACY_PLUGIN_NAMES) {
-    if (fs.existsSync(path.join(nodeModulesDir, ...name.split('/')))) candidates.add(name);
+    if (fs.existsSync(path.join(nodeModulesDir, ...name.split('/'))) || name in deps) {
+      candidates.add(name);
+    }
   }
-  if (fs.existsSync(nodeModulesDir)) {
-    // 顶层只可能是裸包名（scoped 的在 @scope/ 子目录里），isOwnPluginName 的
-    // `dsh-` 前缀判据在这里同样安全：上游的包全在 @deepseek-ai scope 下。
-    for (const entry of fs.readdirSync(nodeModulesDir)) {
-      if (isOwnPluginName(entry)) candidates.add(entry);
+
+  if (ledger) {
+    // 常规路径：除了上面的旧名，只认账本。上游的包、用户自己装的第三方 dsh 插件
+    // 都不在账本上，因此**结构上**不可能被我们删掉 —— 这正是从启发式换成记账
+    // 要买的东西。
+    for (const name of ledger) candidates.add(name);
+  } else {
+    // 一次性迁移：这个 dsh 是本次改动之前装的，没有账本。用旧的启发式认领一次
+    // 历史遗留，末尾把账本写上，之后就走上面那条路了。
+    //
+    // 候选取**两处**，缺一不可：只看 dependencies 会漏掉「登记已摘、目录还在」
+    // 的孤儿（清理中途被打断就会留下），而那正是要清的东西；只看目录则拿不到登记。
+    for (const name of Object.keys(deps)) {
+      if (isOwnPluginName(name)) candidates.add(name);
+    }
+    if (fs.existsSync(nodeModulesDir)) {
+      // 顶层只可能是裸包名（scoped 的在 @scope/ 子目录里）。
+      for (const entry of fs.readdirSync(nodeModulesDir)) {
+        if (isOwnPluginName(entry)) candidates.add(entry);
+      }
     }
   }
 
   const stale = [...candidates].filter((name) => !keep.has(name));
-  if (stale.length === 0) return [];
 
-  let depsChanged = false;
+  let changed = false;
   for (const name of stale) {
     if (name in deps) {
       delete deps[name];
-      depsChanged = true;
+      changed = true;
     }
     fs.rmSync(path.join(nodeModulesDir, ...name.split('/')), { recursive: true, force: true });
     logger.log(`[plugin] 已清理遗留插件: ${name}`);
   }
-  if (depsChanged) {
+
+  // 账本永远写成「当前清单」，与本次实际装进去的一致。即使没清理出东西也要写：
+  // 迁移那一趟必须留下账本，否则下次又走启发式。
+  const nextLedger = [...keep].sort();
+  const prevLedger = ledger ? [...ledger].sort() : null;
+  if (prevLedger === null || prevLedger.join('\0') !== nextLedger.join('\0')) {
+    manifest[PLUGIN_LEDGER_KEY] = nextLedger;
+    changed = true;
+  }
+  if (changed) {
     manifest.dependencies = deps;
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
   }
   return stale;
 }
 
-/** 2) 登记进 dsh 的 package.json dependencies（幂等）。返回是否真的写入。 */
+/**
+ * 2) 登记进 dsh 的 package.json dependencies（幂等）。返回是否真的写入。
+ *
+ * 版本号不同要**改写**而不是跳过：copyPluginSource 每次都会覆盖成最新源码，
+ * 登记若停在旧号，全局 dsh 的 package.json 就会长期写着 v0.1.1、实际躺着
+ * v0.2.2。运行时不读这个号（healProfilesModuleFallback 只看 key），所以不会
+ * 出错——但它是排查问题时第一个会去看的地方，一个会骗人的状态比没有更糟。
+ */
 function registerDependency(manifestPath, packageName, version) {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   manifest.dependencies ??= {};
-  if (manifest.dependencies[packageName] !== undefined) return false;
+  if (manifest.dependencies[packageName] === version) return false;
   manifest.dependencies[packageName] = version;
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
   return true;
@@ -301,16 +437,20 @@ function installPlugin(opts) {
   const wrote = registerDependency(manifestPath, packageName, version);
   logger.log(wrote
     ? `[plugin] 已登记依赖 ${packageName}@${version}`
-    : `[plugin] 依赖 ${packageName} 已登记，跳过`);
+    : `[plugin] 依赖 ${packageName}@${version} 已是最新登记，跳过`);
 
   return { packageName, version };
 }
 
 module.exports = {
+  PLUGIN_LEDGER_KEY,
   loadPluginManifest,
+  vendoredPluginNames,
   readPluginPackage,
   resolvePluginSrcDir,
   copyPluginSource,
+  copyPluginTree,
+  PLUGIN_COPY_EXCLUDE,
   renderActivationPatch,
   writeActivationPatch,
   writeSafeModePatch,

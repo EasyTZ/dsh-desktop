@@ -11,11 +11,13 @@
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { vendoredPluginNames } from '../src/shared/plugin-install.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+const plugins = vendoredPluginNames(root);
 
-const linked = Object.keys(pkg.dependencies ?? {}).filter((name) => {
+const linked = plugins.filter((name) => {
   const dir = join(root, 'node_modules', name);
   return existsSync(dir) && lstatSync(dir).isSymbolicLink();
 });
@@ -30,4 +32,27 @@ if (linked.length > 0) {
   process.exit(1);
 }
 
-console.log('[verify-plugin-pins] 插件均来自钉住的版本，可以打包。');
+// 「不是链接」只证明那份来自 npm，不证明它来自一个**钉死的 tag**。这个脚本的名
+// 字承诺的是后者：把依赖改成 `#main` 或干脆不带 ref，照样能过上面那关，而按分支
+// 拉取意味着同一个 commit 在不同时间打出不同的包 —— 正是这个闸门要挡的事。
+const BAD_REFS = new Set(['main', 'master', 'HEAD', 'latest']);
+const badSpecs = [];
+for (const name of plugins) {
+  const spec = String(pkg.dependencies?.[name] ?? '');
+  const hash = spec.indexOf('#');
+  const ref = hash < 0 ? '' : spec.slice(hash + 1);
+  if (ref.length === 0) {
+    badSpecs.push(`${name}: 依赖没有钉任何 ref（${spec || '空'}）`);
+  } else if (BAD_REFS.has(ref) || ref.startsWith('semver:')) {
+    badSpecs.push(`${name}: 钉的是分支或范围而非固定 tag（#${ref}）`);
+  }
+}
+if (badSpecs.length > 0) {
+  console.error('[verify-plugin-pins] 插件依赖没有钉在固定 tag 上：');
+  for (const line of badSpecs) console.error(`  - ${line}`);
+  console.error('\n按分支拉取意味着同一个 commit 在不同时间打出不同的包。');
+  console.error('请把 package.json 里对应依赖改成 `#v<版本号>` 形式的 tag。');
+  process.exit(1);
+}
+
+console.log(`[verify-plugin-pins] ${plugins.length} 个插件均来自钉住的 tag，可以打包。`);

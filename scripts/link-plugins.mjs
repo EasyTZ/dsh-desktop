@@ -19,6 +19,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { vendoredPluginNames } from '../src/shared/plugin-install.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const nodeModules = join(root, 'node_modules');
@@ -28,11 +29,12 @@ const mode = process.argv.includes('--off') ? 'off'
   : process.argv.includes('--status') ? 'status'
     : 'on';
 
-/** 只处理「git 依赖 vendor 进来的」插件；plugins/ 下的桌面专属插件本来就是源码。 */
-function vendoredPlugins() {
-  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-  return Object.keys(pkg.dependencies ?? {});
-}
+/**
+ * 只处理「git 依赖 vendor 进来的」插件；plugins/ 下的桌面专属插件本来就是源码。
+ * 名单取「清单 ∩ dependencies」而不是「dependencies 的全部」—— 后者会在将来加
+ * 一个非插件生产依赖时，跑去 ../<那个包名> 找工作副本。
+ */
+const vendoredPlugins = () => vendoredPluginNames(root);
 
 /** @returns {'linked'|'pinned'|'missing'} */
 function stateOf(name) {
@@ -49,9 +51,22 @@ function report() {
   }
 }
 
+/**
+ * `dist` 解除了联调却没恢复的标记。`dist.mjs` 的恢复走 `try/finally`，而 finally
+ * **在强杀（Ctrl-C 两下 / taskkill）时不会执行** —— 那种情况下联调被静默关掉，
+ * 人以为还开着，改完插件跑 install-plugin 却怎么都不生效。这里替它把话说出来。
+ */
+function warnStaleUnlink() {
+  const marker = join(root, '.dist-unlinked');
+  if (!existsSync(marker)) return;
+  console.warn('\n[link-plugins] ⚠ 上一次 npm run dist 解除了联调但没能恢复（多半是被强制中断）。');
+  console.warn('[link-plugins]   跑 npm run link-plugins 恢复；恢复后这条提示会消失。');
+}
+
 if (mode === 'status') {
   console.log('[link-plugins] 当前状态：');
   report();
+  warnStaleUnlink();
   process.exit(0);
 }
 
@@ -78,6 +93,8 @@ if (mode === 'on') {
     symlinkSync(target, dest, 'junction');
     console.log(`[link-plugins] ${name} → ${target}`);
   }
+  // 联调恢复到位，`dist` 那次没善终的标记可以销了。
+  rmSync(join(root, '.dist-unlinked'), { force: true });
   console.log('\n[link-plugins] 已进入联调模式。改完插件源码后跑 npm run install-plugin 即可生效。');
   console.log('[link-plugins] 发版前记得 npm run unlink-plugins —— 否则 npm run dist 会被拦下。');
   if (failed) process.exit(1);

@@ -16,6 +16,7 @@
 //
 // 另外：本脚本改的是本机全局 dsh 安装目录，每次 `npm install -g @deepseek-ai/dsh`
 // 升级后都要重跑一次，否则改动会被新版本覆盖丢失。
+import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findDshInstallSync } from '../src/shared/dsh-locate.js';
@@ -68,4 +69,14 @@ try {
 }
 
 console.log(failed ? '[install-plugin] 完成（存在失败项）' : '[install-plugin] 完成');
+
+// 这是改完插件后最常跑的命令，也就是「改了却不生效」最先被察觉的地方 —— 所以
+// 由它来提醒「联调其实已经被关掉了」。标记由 dist.mjs 落下：它的恢复走
+// try/finally，而 finally 在强杀（Ctrl-C 两下 / taskkill）时不会执行。
+if (existsSync(join(root, '.dist-unlinked'))) {
+  console.warn('\n[install-plugin] ⚠ 联调当前是**关闭**的：上一次 npm run dist 解除后没能恢复（多半被强制中断）。');
+  console.warn('[install-plugin]   刚才装进内核的是钉住的 tag，不是你的工作副本 —— 改动不会生效。');
+  console.warn('[install-plugin]   跑 npm run link-plugins 恢复后再装一次。');
+}
+
 if (failed) process.exit(1);

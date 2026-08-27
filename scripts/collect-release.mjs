@@ -37,3 +37,11 @@ console.log('[collect-release] 完成，产物：');
 for (const f of readdirSync(releaseDir)) {
   console.log(`  - ${f}`);
 }
+
+// 把这次打进包的内核版本再报一次。产物文件名上只有应用版本号，而内核是独立
+// 升级的另一条线 —— 发布说明里要写「内置内核 x.y.z」，这里是最后一次能顺手拿到
+// 这个号的地方，不必事后去扒 asar。
+const kernelPkg = join(root, 'kernel', 'runtime', 'node_modules', '@deepseek-ai', 'dsh', 'package.json');
+if (existsSync(kernelPkg)) {
+  console.log(`\n[collect-release] 本次内置内核：dsh ${JSON.parse(readFileSync(kernelPkg, 'utf8')).version}`);
+}

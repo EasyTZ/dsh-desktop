@@ -7,7 +7,7 @@
 // 注意：自定义插件由 scripts/install-plugin.mjs 装进开发态 dsh 的依赖树（含激活
 // 条目与依赖登记），下面整目录拷贝 dsh 时会一并带进内核，因此这里无需再处理插件。
 // 前提是 install-plugin 先跑过 —— npm run dist 的顺序已经保证了这一点。
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findDshInstallSync, findPnpmDirSync } from '../src/shared/dsh-locate.js';
@@ -27,9 +27,42 @@ const installDir = findDshInstallSync();
 const nodeExe = findNodeExe();
 const pnpmDir = findPnpmDirSync();
 
+const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+const kernelVersion = JSON.parse(readFileSync(join(installDir, 'package.json'), 'utf8')).version;
+
 console.log(`[prepare-kernel] dsh:  ${installDir}`);
+console.log(`[prepare-kernel] 版本: ${kernelVersion}`);
 console.log(`[prepare-kernel] node: ${nodeExe}`);
 console.log(`[prepare-kernel] pnpm: ${pnpmDir}`);
+
+/**
+ * 内核版本闸门。
+ *
+ * 插件是可复现的（package.json 钉 tag、lockfile 锁 commit），内核**不是**：它整
+ * 个来自打包机上的全局 dsh，随手一次 `npm i -g @deepseek-ai/dsh` 就换了。同一个
+ * app commit 在不同时间打包，装进去的内核可能是两个版本，而外面贴的还是同一个
+ * 应用版本号 —— 用户报「1.4.0 有 bug」时，我们连自己发的是哪个内核都对不上账。
+ *
+ * 所以把「这一版要发哪个内核」写进 package.json 的 dshKernel.expected，让它跟着
+ * 代码一起进版本库。对不上就**中止**而不是静默打包：升级全局 dsh 是个有意的动作，
+ * 那就让「换内核」也变成一个有意的动作（改一行、跟着这次提交走）。
+ *
+ * 临时想拿别的内核试打包，用 DSH_KERNEL_ANY=1 跳过 —— 但那样打出来的包别拿去发布。
+ */
+const expectedKernel = pkg.dshKernel?.expected;
+if (expectedKernel && expectedKernel !== kernelVersion && process.env.DSH_KERNEL_ANY !== '1') {
+  console.error(`\n[prepare-kernel] 已中止：内核版本与本仓库声明的不一致。`);
+  console.error(`  package.json dshKernel.expected: ${expectedKernel}`);
+  console.error(`  本机全局 dsh 实际版本:            ${kernelVersion}\n`);
+  console.error('二选一：');
+  console.error(`  · 这一版就要发 ${kernelVersion} → 把 package.json 的 dshKernel.expected 改成它，一起提交；`);
+  console.error(`  · 不想换内核 → npm i -g @deepseek-ai/dsh@${expectedKernel}\n`);
+  console.error('（只是想试打包，不发布：DSH_KERNEL_ANY=1 npm run dist）');
+  process.exit(1);
+}
+if (!expectedKernel) {
+  console.warn('[prepare-kernel] 警告：package.json 未声明 dshKernel.expected，本次打包的内核版本不受约束。');
+}
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(join(outDir, 'runtime', 'node_modules', '@deepseek-ai'), { recursive: true });

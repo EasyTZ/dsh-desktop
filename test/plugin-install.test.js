@@ -8,7 +8,7 @@ const path = require('node:path');
 const {
   loadPluginManifest, readPluginPackage, installPlugin, registerDependency,
   renderActivationPatch, writeActivationPatch, writeSafeModePatch, resolvePluginSrcDir,
-  cleanupLegacyPlugins,
+  cleanupLegacyPlugins, PLUGIN_LEDGER_KEY,
 } = require('../src/shared/plugin-install');
 
 // 插件安装必须做满两件事：拷贝源码 / 登记依赖。漏掉登记时 dsh 运行期的
@@ -83,13 +83,57 @@ test('installPlugin: 幂等，重复执行结果一致', () => {
   fs.rmSync(f.root, { recursive: true, force: true });
 });
 
-test('registerDependency: 已存在的版本不被覆盖', () => {
+test('registerDependency: 登记跟着实际源码走，旧号要被改写', () => {
+  // 这条曾经断言的是反过来的「已存在就不覆盖」。那是错的：copyPluginSource 每次
+  // 都把源码覆盖成最新的，登记却停在旧号，全局 dsh 的 package.json 就会长期写着
+  // 一个和磁盘上实际内容对不上的版本。运行时不读这个号（healProfilesModuleFallback
+  // 只看 key）所以不会出错，但排查问题时第一眼看的就是它 —— 会骗人的状态比没有更糟。
   const f = makeFixture();
   fs.writeFileSync(f.manifestPath,
     JSON.stringify({ name: 'dsh', dependencies: { [PKG]: '9.9.9' } }, null, 2));
   const wrote = registerDependency(f.manifestPath, PKG, '1.2.3');
-  assert.strictEqual(wrote, false);
-  assert.strictEqual(readDeps(f.manifestPath)[PKG], '9.9.9');
+  assert.strictEqual(wrote, true);
+  assert.strictEqual(readDeps(f.manifestPath)[PKG], '1.2.3', '登记必须反映实际装进去的那份');
+  fs.rmSync(f.root, { recursive: true, force: true });
+});
+
+test('cleanupLegacyPlugins: 有账本之后，第三方 dsh-* 插件绝不能被误删', () => {
+  // 这是把「`dsh-` 前缀启发式」换成「记账」要买的唯一东西。旧判据的理由是「上游
+  // 的包全在 @deepseek-ai scope 下」—— 对上游成立，对**用户**不成立：dsh 插件生态
+  // 起来之后，用户完全可能自己 `dsh plugin add` 一个第三方 `dsh-foo` 到同一个全局
+  // dsh 里。我们自己就在发四个 dsh- 开头的插件，等于亲手把这个命名空间做热了。
+  const f = makeFixture();
+  const nm = path.join(f.root, 'node_modules');
+  const manifestPath = path.join(f.root, 'package.json');
+  const mk = (name) => {
+    const dir = path.join(nm, ...name.split('/'));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name }));
+  };
+  ['dsh-git', 'dsh-dropped', 'dsh-foo'].forEach(mk);
+  fs.writeFileSync(manifestPath, JSON.stringify({
+    dependencies: {
+      'dsh-git': '0.2.2',      // 清单里有 → 留
+      'dsh-dropped': '0.1.0',  // 账本上有、清单里没有 → 清
+      'dsh-foo': '1.0.0',      // 用户自己装的第三方 → 账本上没有 → 绝不能碰
+    },
+    // 账本：我们只装过这两个
+    [PLUGIN_LEDGER_KEY]: ['dsh-git', 'dsh-dropped'],
+  }, null, 2));
+
+  const removed = cleanupLegacyPlugins({
+    nodeModulesDir: nm,
+    manifestPath,
+    plugins: [{ packageName: 'dsh-git' }],
+    logger: { log() {}, warn() {} },
+  });
+
+  assert.deepStrictEqual(removed, ['dsh-dropped']);
+  assert.ok(fs.existsSync(path.join(nm, 'dsh-foo')), '第三方 dsh-* 插件必须原样保留');
+  const after = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  assert.ok('dsh-foo' in after.dependencies, '第三方插件的登记也不能摘');
+  assert.deepStrictEqual(after[PLUGIN_LEDGER_KEY], ['dsh-git'], '账本要更新成当前清单');
+
   fs.rmSync(f.root, { recursive: true, force: true });
 });
 
@@ -208,6 +252,61 @@ test('清单里的 entryId 一律带 dsdesktop- 前缀，避免与上游 bundle 
   }
 });
 
+/** 把一组条目写成临时 plugins.json，返回它所在的目录。 */
+function manifestDir(entries) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-manifest-test-'));
+  fs.writeFileSync(path.join(dir, 'plugins.json'), JSON.stringify(entries));
+  return dir;
+}
+
+test('loadPluginManifest: 重复 entryId 必须报错', () => {
+  // 和「与上游 bundle 撞名」是同一种事故，只是撞的是自己人：`- insert:` 不去重，
+  // cordis loader 见到重复 id 直接抛 duplicate loader entry id，内核秒退、桌面端
+  // 黑屏。前缀规则挡的是对外撞车，这条挡的是清单内部撞车。
+  const dir = manifestDir([
+    { packageName: 'dsh-a', entryId: 'dsdesktop-x' },
+    { packageName: 'dsh-b', entryId: 'dsdesktop-x' },
+  ]);
+  assert.throws(() => loadPluginManifest(dir), /重复的 entryId/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('loadPluginManifest: 重复 packageName 必须报错', () => {
+  const dir = manifestDir([
+    { packageName: 'dsh-a', entryId: 'dsdesktop-a' },
+    { packageName: 'dsh-a', entryId: 'dsdesktop-a2' },
+  ]);
+  assert.throws(() => loadPluginManifest(dir), /重复的 packageName/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('loadPluginManifest: packageName 必须是合法包名（路径护栏）', () => {
+  // packageName 会被 split('/') 摊进 path.join，再交给递归 rmSync —— 形状不校验
+  // 就等于把「删哪个目录」的决定权交给清单文本。
+  for (const bad of ['../evil', 'a/../../b', 'C:\\evil', './x', 'UPPER']) {
+    const dir = manifestDir([{ packageName: bad, entryId: 'dsdesktop-x' }]);
+    assert.throws(() => loadPluginManifest(dir), /不是合法包名/, `应拒绝 ${bad}`);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('loadPluginManifest: scoped 包名照常放行', () => {
+  const dir = manifestDir([{ packageName: '@scope/dsh-a', entryId: 'dsdesktop-a' }]);
+  assert.strictEqual(loadPluginManifest(dir).length, 1);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('registerDependency: 版本变了要改写登记，不能停在旧号', () => {
+  // 源码每次都被 copyPluginSource 覆盖成最新的，登记若跳过就会长期写着旧版本号，
+  // 排查问题时第一眼看到的就是这个骗人的号。
+  const f = makeFixture();
+  assert.strictEqual(registerDependency(f.manifestPath, PKG, '1.0.0'), true);
+  assert.strictEqual(registerDependency(f.manifestPath, PKG, '1.0.0'), false, '同版本仍然幂等');
+  assert.strictEqual(registerDependency(f.manifestPath, PKG, '2.0.0'), true, '版本变了必须改写');
+  assert.strictEqual(readDeps(f.manifestPath)[PKG], '2.0.0');
+  fs.rmSync(f.root, { recursive: true, force: true });
+});
+
 test('cleanupLegacyPlugins: 清掉改名遗留，保留清单内的与上游的', () => {
   const f = makeFixture();
   const nm = path.join(f.root, 'node_modules');
@@ -246,6 +345,12 @@ test('cleanupLegacyPlugins: 清掉改名遗留，保留清单内的与上游的'
   // 误删上游的包 = 内核起不来，这两条是这个函数最重要的护栏。
   assert.ok(fs.existsSync(path.join(nm, '@deepseek-ai', 'dsh-workspace')), '上游 scoped 包不能碰');
   assert.ok(fs.existsSync(path.join(nm, 'commander')), '上游非 scoped 包不能碰');
+
+  // 迁移那一趟必须留下账本，否则下次又走启发式。
+  assert.deepStrictEqual(
+    JSON.parse(fs.readFileSync(manifestPath, 'utf8'))[PLUGIN_LEDGER_KEY],
+    ['dsh-git', 'dsh-plugin-manager'],
+  );
 
   // 幂等：再跑一次没有可清的，且不该改写 package.json。
   assert.deepStrictEqual(cleanupLegacyPlugins({

@@ -109,3 +109,44 @@ test('过期的 lastCheck 会重新触发检查', async () => {
   assert.strictEqual(makeUpdater(f, '0.1.1-rc.2').shouldAutoCheck(), true);
   cleanup(f);
 });
+
+// —— 插件重装：装不满就不许扶正 ————————————————————————————————
+//
+// 这里守的是一个很隐蔽的洞。曾经 _installPlugins 是「一个插件装失败就 warn 一声
+// 接着装下一个」，而：
+//   1) 被用户关掉的插件不会进 _activationPatch 生成的 overlay；
+//   2) _verify 的自检只加载 overlay 里的东西。
+// 三件事凑在一起 → 装失败的若正好是被关掉的那个，自检根本碰不到它，照样通过，
+// 新内核被扶正；等用户哪天把它重新打开并重启，内核 import 一个不存在的模块、
+// 秒退、黑屏 —— 事故发生在更新的好几天之后，和更新这个动作完全对不上。
+
+test('_installPlugins: 任一插件装失败，整次更新必须失败（不能扶正残缺内核）', () => {
+  const f = makeFixture('0.1.0-rc.7');
+  const pluginsDir = path.join(f.root, 'plugins');
+  fs.mkdirSync(pluginsDir, { recursive: true });
+  // 清单里点名一个源码根本不存在的插件 —— resolvePluginSrcDir 会抛。
+  fs.writeFileSync(path.join(pluginsDir, 'plugins.json'), JSON.stringify([
+    { packageName: 'dsh-not-there', entryId: 'dsdesktop-not-there', enabled: false },
+  ]));
+
+  const u = makeUpdater(f, '0.1.1-rc.2');
+  u.pluginsDir = pluginsDir;
+  assert.throws(
+    () => u._installPlugins(path.join(f.root, 'staging')),
+    /dsh-not-there.*新内核不完整/s,
+    '装不上就该让这次更新失败，继续用当前能跑的内核',
+  );
+  cleanup(f);
+});
+
+test('_installPlugins: 清单读不出来时同样失败，不能当作「没有插件」放行', () => {
+  const f = makeFixture('0.1.0-rc.7');
+  const pluginsDir = path.join(f.root, 'plugins');
+  fs.mkdirSync(pluginsDir, { recursive: true });
+  fs.writeFileSync(path.join(pluginsDir, 'plugins.json'), '{ 这不是 JSON');
+
+  const u = makeUpdater(f, '0.1.1-rc.2');
+  u.pluginsDir = pluginsDir;
+  assert.throws(() => u._installPlugins(path.join(f.root, 'staging')));
+  cleanup(f);
+});

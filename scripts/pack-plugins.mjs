@@ -11,7 +11,7 @@
 import { cpSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadPluginManifest, resolvePluginSrcDir } from '../src/shared/plugin-install.js';
+import { copyPluginTree, loadPluginManifest, resolvePluginSrcDir } from '../src/shared/plugin-install.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pluginsDir = join(root, 'plugins');
@@ -40,9 +40,10 @@ function measure(dir) {
 
 for (const plugin of plugins) {
   const src = resolvePluginSrcDir({ pluginsDir, nodeModulesDir, packageName: plugin.packageName });
-  // dereference：npm link / file: 联调时 node_modules 里可能是符号链接，摊进
-  // 安装包的必须是实体文件。
-  cpSync(src, join(outDir, plugin.packageName), { recursive: true, dereference: true });
+  // 与装进内核那条路用同一个拷贝实现：跟随符号链接拷实体（联调时 node_modules
+  // 里是链接，摊进安装包的必须是实体文件），并跳过 test/ .github/ 这类不参与运行
+  // 的目录 —— 拆仓后插件仓库有了自己的测试与 CI，不挡就会跟着进安装包。
+  copyPluginTree(src, join(outDir, plugin.packageName));
   measure(join(outDir, plugin.packageName));
   console.log(`[pack-plugins] ${plugin.packageName} <- ${src}`);
 }

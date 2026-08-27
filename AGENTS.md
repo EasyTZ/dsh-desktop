@@ -55,6 +55,9 @@ test/         node:test 用例
 - **客户端插件源码不在 typecheck 的 include 里**（`plugins/dsh-plugin-manager/lib/client.js`、拆仓后的 `node_modules/dsh-*/lib/client.js`），`useCallback`/`useEffect` 依赖数组的 TDZ 错误只有真实渲染才暴露——客户端插件要配 smoke 测试（参照 `test/terminal-client-smoke.test.js`），纯逻辑放 `lib/pure.js`（零 import，`test/` 可直接 import）。
 - 客户端插件样式自己注入 `<style>`（按 `data-plugin-css` 去重），颜色一律用 dsh 的设计 token（`--dsw-alias-*`）。**token 名要核对**——它们定义在 `dsh-client-ui-theme` 的 `design-platform.css` 里（编译进客户端 bundle、运行时注入，静态 CSS 里搜不到），写错名字不会报错、只会静默走 `var()` 的兜底值，于是那处颜色永远不跟主题（`state-warning-primary` 就是错的，真名 `state-warn-primary`）。另外 `bg-layer-1/2/3` 在**浅色主题下全是白**，靠它们做「面与面的区分」在浅色下等于没做——要相对色调用 `interactive-bg-hover` / `interactive-bg-active`，要按钮面用 `button-ghost-active-fill`。
 - **打包不能用联调中的源码**：`install-plugin` 与 `pack-plugins` 都带 `dereference` 拷贝，联调下会把工作副本当前内容（含未提交改动）摊进安装包，版本号却仍是 tag 的号。`scripts/dist.mjs` 自动收尾，并在解除前核对「工作区干净 + HEAD 落在钉住的 tag 上」——否则解除后拉回旧版本，打出的包**不含你的改动**而你以为含，是同一问题的另一面。
+- **热更新时插件装不满就不许扶正**：`_installPlugins` 任一插件失败都要让整次更新失败。曾经是「warn 一声接着装」，漏出的洞是——装失败的若正好是被用户关掉的插件，它不在激活 overlay 里，`_verify` 自检根本不加载它、照样通过、新内核被扶正；等用户哪天重新打开它并重启就秒退黑屏，而事故和「更新内核」这个动作隔了好几天，完全对不上。
+- **插件的 HTTP 路由要有统一安全基线**：每个注册 webServer 路由的插件都要有 `originAllowed`（跨源 → 403），有 POST 的还要有 `requireJson`（非 JSON → 415），两条配套缺一不可。`test/plugin-http-baseline.test.js` 跨四个仓库强制一致（连实现是否逐字相同都比）。**别为此抽公共包**——无编译、单文件、零依赖是这些插件能被别人抄走就用的前提，正确做法是复制 + 校验一致。该测试非联调态报红通常不是误报，而是「钉住的 tag 里还没这条防线」。
+- **lockfile 里插件的 `resolved` 是 `git+ssh://`，别去"修"**：npm 对 GitHub 托管依赖一律这么写，显式改成 `git+https` 也会被归一化回去。实测全新 cache + ssh 不通时 `npm ci` 照样成功（npm 自动回落 https），不影响新机器或 CI。
 
 ## 改插件后要不要重启（实测）
 
@@ -65,3 +68,5 @@ test/         node:test 用例
 ## 发版
 
 改 `package.json` 的 `version` → README「更新日志」加一节 → `npm run dist`，产物按版本号精确匹配收进 `release/`。
+
+内核版本也要跟着走：`package.json` 的 `dshKernel.expected` 声明这一版发哪个 dsh 内核，`prepare-kernel` 核对本机全局 dsh，对不上直接中止。原因是内核不像插件那样可复现——它整个来自打包机上的全局 dsh，`npm i -g @deepseek-ai/dsh` 一下就换了，同一个 app commit 可能打出装着不同内核的包，而外面贴的还是同一个版本号。想拿别的内核试打包用 `DSH_KERNEL_ANY=1`（那样的包别发布）。`collect-release` 结束时会报本次内置的内核版本，写发布说明时直接抄。

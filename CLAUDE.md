@@ -118,6 +118,8 @@ npm run icon             # 仅在改了 build/logo.svg 后重新生成 icon.png/
 - `dependencies` 不再为空（4 条插件 git 依赖），但这些依赖只被 vendor 源码、从不被运行时 require——真正跑插件的是内核进程里的那份拷贝。也因此根安装不解析插件的 peer（`.npmrc` 开了 `legacy-peer-deps`，插件 peer 由内核提供）。
 - 首次拉取插件 tag 需要联网；lockfile 未变时重复构建仍不联网。
 
+**lockfile 里插件的 `resolved` 是 `git+ssh://git@github.com/...`，这不是问题，别再去"修"它。** npm 的 `hosted-git-info` 对 GitHub 托管的依赖一律归一化成 ssh 形式写进 lock，把 `package.json` 的 spec 显式改成 `git+https://...` 也会被它改回 `github:` 简写。担心的是「新机器 / CI 没有 SSH key 时 `npm ci` 失败」—— 实测过了：**全新 npm cache + `GIT_SSH_COMMAND="exit 1"`（ssh 确认不通）下 `npm ci` 照样成功**，npm 对 hosted 依赖会自动回落到 https。测法：拿一个只含插件依赖的临时 `package.json` 生成 lock，`rm -rf node_modules` 后带上面两个条件跑 `npm ci`。
+
 路径覆盖环境变量（脚本与 DshService 共用同一套探测逻辑）：`DSH_INSTALL_DIR`、`DSH_NODE_EXE`、`DSH_BIN_JS`、`DSH_PNPM_DIR`。
 
 ## 架构
@@ -187,7 +189,7 @@ test/         node:test 用例
 
 ### 自定义插件契约（最容易出错的地方）
 
-`plugins/plugins.json` 是唯一清单（`packageName` / `entryId` / 可选 `enabled`）。实现**只有一份**，在 `src/shared/plugin-install.js`。
+`plugins/plugins.json` 是唯一清单（`packageName` / `entryId` / 可选 `enabled`）。实现**只有一份**，在 `src/shared/plugin-install.js`。清单在 `loadPluginManifest` 里强校验：必填字段、`packageName` 必须是合法包名形状、**`entryId` 与 `packageName` 都不许重复**。重复 `entryId` 和「与上游撞名」是同一种事故（`duplicate loader entry id` → 内核秒退），只是撞的是自己人；包名形状那条是路径护栏——`packageName` 会被 `split('/')` 摊进 `path.join` 再交给递归 `rmSync`，不校验等于把「删哪个目录」交给清单文本。
 
 **`entryId` 一律带 `dsdesktop-` 前缀**（由 `test/plugin-install.test.js` 强制）。`- insert:` 不去重，我们的 id 若与上游 bundle 里某条同名就是 `duplicate loader entry id` → 内核秒退。上游 130+ 个 id 里大量是 `git` / `session` / `settings` / `storage` 这类通用词，而内核会自己热更新到新版本 —— 不加前缀的话撞车只是时间问题，且发生在用户机器上、表现为黑屏。前缀取 `dsdesktop-` 而非 `desktop-`：上游已有 web / tui / headless 三个 surface，将来真加一个 desktop surface 时 `desktop-` 反而可能被它用掉。
 
@@ -213,6 +215,13 @@ test/         node:test 用例
 - **`--patch` 必须排在 `--host` 之前**。`bin.js` 的 launcher 只解析自己的 flag，「第一个不认识的 token 开始就是内层参数」；`--host` 是 web app 的 flag，排它后面的 `--patch` 会被原样透传，然后 web app 报 `unknown option '--patch'` 直接退出。
 - **绝不要再往发行包的 `cordis.patch.yml` 里写东西**。`- insert:` 不去重：bundle 里有一条、overlay 再给一条，cordis loader 会抛 `duplicate loader entry id` 让内核**秒退**，与 v1.1.1 同一类致命失败。v1.2.0 从 v1.1.x 升级时，用户 `%APPDATA%` 里被老版本篡改过的热更新内核就会撞上这个 —— 靠「秒退 → 删用户内核 → 回退内置 → 静默重启」自愈，代价是重下一次内核。
 - **`_verify` 必须带 overlay**。不带就是验了一个「没有插件的内核」，而真正启动是带着 overlay 跑的 —— 插件加载阶段的崩溃会整个溜过自检。
+- **热更新时插件装不满就不许扶正**。`_installPlugins` 里任何一个插件安装失败、或清单读不出来，都要让整次更新失败，**不能 warn 一声接着装下一个**。曾经就是那样，漏出一个很隐蔽的洞：装失败的若正好是**被用户关掉**的插件，它不在 overlay 里 → `_verify` 根本不加载它 → 自检照过 → 新内核扶正；等用户哪天把它重新打开并重启，内核 `import` 一个不存在的模块、秒退、黑屏，而事故发生在更新的好几天之后，和「更新内核」这个动作完全对不上。同理 `_activationPatch` 也不吞异常。回归测试在 `test/kernel-updater.test.js`。
+
+**插件的 HTTP 路由安全基线**（四个插件必须一致，`test/plugin-http-baseline.test.js` 强制）：每个注册了 webServer 路由的插件都要有 `originAllowed`（Origin 存在且不等于本服务 origin → 403），有 POST 路由的还要有 `requireJson`（Content-Type 不是 application/json → 415）。两条是配套的：Origin 头在「无 preflight 的简单请求」里可以缺席，光靠 Origin 挡不住用 `text/plain` 发出来的跨源 POST。端口要在**请求时**动态取（`ctx.webServer.port`），constructor 阶段还是 `null`。
+
+这条基线一度只有终端面板有，而 `dsh-git` 恰恰是唯一有 commit / push / undo-commit 这类**会改用户仓库**的写路由的插件 —— 同一个威胁四个仓库四种待遇，纯粹因为没有任何东西会因此变红。现在那条测试就是那个「会变红的东西」，它跨仓库比对四份 `originAllowed` 的实现是否逐字一致。**不要为此抽一个公共包**：无编译、单文件、零依赖是这些插件能被别人整个抄走就用的前提，正确做法是复制 + 校验一致。
+
+注意这条测试读的是**当前解析到的**插件源码：联调态读工作副本，非联调态读按 tag 拉下来的那份。所以解除联调后它报红，通常不是误报，而是在说「钉住的 tag 里还没有这条防线」——安装包里装的就是那份没防线的代码，得发新 tag 并升 pin。
 
 ### 现有的五个插件
 
@@ -308,7 +317,9 @@ Windows toast 还要求存在指向本应用、且 AppUserModelID 与 `app.setAp
 
 `electron-builder.yml`：`asar` 只打 `src/**` + `package.json`（生产依赖只是 vendor 用的插件 git 依赖，`beforeBuild` 返回 `false` 跳过 install/rebuild）；`kernel/` 与 `plugins-dist/` 走 extraResources（插件源码必须进包，热更新后要靠它重装插件；`plugins-dist/` 由 `scripts/pack-plugins.mjs` 按清单把 `plugins/` 与 `node_modules/` 两处源码摊平而成）；`electronDist: node_modules/electron/dist` 复用本机 Electron。**首次** `npm install`（拉插件 git 依赖）需要联网，lockfile 未变时的重复构建不联网——这是拆仓主动接受的代价。
 
-`collect-release.mjs` 按 `package.json` 的 `version` **精确匹配**产物名，改版本号时 dist/ 里的旧产物不会被误选。发版流程：改 `package.json` version → 在 README「更新内容」加一节 → `npm run dist`。
+`collect-release.mjs` 按 `package.json` 的 `version` **精确匹配**产物名，改版本号时 dist/ 里的旧产物不会被误选；结束时还会报一次本次打进包的内核版本（产物文件名上只有应用版本号，而内核是独立升级的另一条线，发布说明里要写「内置内核 x.y.z」）。发版流程：改 `package.json` version → 在 README「更新内容」加一节 → `npm run dist`。
+
+**内核版本闸门**：`package.json` 的 `dshKernel.expected` 声明这一版要发哪个 dsh 内核，`prepare-kernel.mjs` 会核对本机全局 dsh，对不上**直接中止**。为什么需要它：插件是可复现的（钉 tag + lockfile 锁 commit），内核**不是**——它整个来自打包机上的全局 dsh，随手一次 `npm i -g @deepseek-ai/dsh` 就换了，同一个 app commit 在不同时间打包可能装进两个不同的内核，而外面贴的还是同一个应用版本号。用户报「1.4.0 有 bug」时，我们连自己发的是哪个内核都对不上账。升级内核因此变成一次有意的、跟着提交走的改动：改 `dshKernel.expected` 那一行。只想拿别的内核试打包用 `DSH_KERNEL_ANY=1`，那样打出来的包别拿去发布。
 
 ## 约定
 
