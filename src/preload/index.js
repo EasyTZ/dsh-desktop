@@ -179,4 +179,7 @@ contextBridge.exposeInMainWorld('desktop', {
   minimize: () => ipcRenderer.send('window:minimize'),
   maximize: () => ipcRenderer.send('window:maximize'),
   close: () => ipcRenderer.send('window:close'),
+  // 插件管理面板（dsh 插件，跑在页面主世界）用这个入口触发「重启生效」。
+  // 插件自己碰不到 Electron API，只能经这层薄桥进主进程。
+  restartApp: () => ipcRenderer.send('app:restart'),
 });

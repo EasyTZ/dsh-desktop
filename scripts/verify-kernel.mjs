@@ -44,7 +44,8 @@ auditEntryPoints(join(kernelDir, 'runtime', 'node_modules', '@deepseek-ai', 'dsh
 
 const home = mkdtempSync(join(tmpdir(), 'dsh-verify-'));
 const patchPath = join(home, 'desktop.patch.yml');
-writeActivationPatch(patchPath, join(root, 'plugins'), loadPluginManifest(join(root, 'plugins')));
+// 构建期自检不带用户开关状态（默认全开）：这里要验的是「插件加载路径」本身。
+writeActivationPatch(patchPath, loadPluginManifest(join(root, 'plugins')));
 
 const port = await findFreePort();
 // --patch 必须排在 --host 之前：bin.js 的 launcher 只解析自己的 flag，从第一个不

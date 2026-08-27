@@ -1,18 +1,23 @@
 [
   {
-    "srcDir": "dsh-ui-balance",
-    "entryId": "balance"
+    "packageName": "dsh-plugin-manager",
+    "entryId": "dsdesktop-plugin-manager",
+    "safeMode": true
   },
   {
-    "srcDir": "dsh-git",
-    "entryId": "git"
+    "packageName": "dsh-ui-balance",
+    "entryId": "dsdesktop-balance"
   },
   {
-    "srcDir": "dsh-reveal-explorer",
-    "entryId": "reveal-explorer"
+    "packageName": "dsh-git",
+    "entryId": "dsdesktop-git"
   },
   {
-    "srcDir": "dsh-terminal-panel",
-    "entryId": "terminal-panel"
+    "packageName": "dsh-reveal-explorer",
+    "entryId": "dsdesktop-reveal-explorer"
+  },
+  {
+    "packageName": "dsh-terminal-panel",
+    "entryId": "dsdesktop-terminal-panel"
   }
 ]

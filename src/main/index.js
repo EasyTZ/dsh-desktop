@@ -34,6 +34,10 @@ if (!gotLock) {
   let updater = null;
   let isQuitting = false;
   let kernelFallbackAttempted = false;
+  // 安全模式：只加载清单里标了 safeMode 的插件（当前只有插件管理面板）。
+  // **刻意只存在内存里**：重启应用就回到正常模式，不会让用户卡在安全模式里
+  // 出不来，也不需要再造一个「怎么退出安全模式」的入口。
+  let safeMode = false;
 
   // 内核与插件路径：打包态走 resourcesPath，开发态走仓库根。
   const BUILTIN_KERNEL_DIR = app.isPackaged
@@ -47,6 +51,18 @@ if (!gotLock) {
   // 插件激活 overlay：由 plugins.json 生成，启动时经 `--patch` 交给内核。
   // 放 userData 而不是 resources：打包态 resources 只读，且内容随清单变化。
   const ACTIVATION_PATCH_PATH = path.join(app.getPath('userData'), 'desktop.patch.yml');
+  // 插件开关状态（插件管理面板写、启动路径读）：plugins.json 是仓库里的文件，
+  // 打进包后只读，用户的实际开关必须落在可写的 userData 下。
+  const PLUGIN_STATE_PATH = path.join(app.getPath('userData'), 'plugin-state.json');
+
+  // 给内核进程注入桌面版专属路径：写进 process.env 一次，之后所有内核子进程
+  // （DshService 启动的、kernel-updater 自检的）自动继承——比在每个 spawn 点
+  // 各拼一份可靠，将来新增 spawn 点也不会漏。插件管理面板的 node 半只认这些
+  // 变量，绝不硬编码 %APPDATA% 之类的机器路径。
+  process.env.DSH_DESKTOP_PLUGINS_DIR = PLUGINS_DIR;
+  process.env.DSH_DESKTOP_PLUGIN_STATE = PLUGIN_STATE_PATH;
+  process.env.DSH_DESKTOP_ACTIVATION_PATCH = ACTIVATION_PATCH_PATH;
+
   const PNPM_CLI_PATH = path.join(BUILTIN_KERNEL_DIR, 'pnpm', 'bin', 'pnpm.cjs');
   const PNPM_STORE_DIR = path.join(app.getPath('userData'), 'pnpm-store');
   const BUILTIN_NODE_EXE = path.join(BUILTIN_KERNEL_DIR, 'node.exe');
@@ -168,23 +184,59 @@ if (!gotLock) {
     const where = typeof code === 'number'
       ? `（code=${code}${signal ? ` signal=${signal}` : ''}）`
       : '';
-    let choice = 1;
+    // 已经在安全模式里还崩，说明问题不在插件，再给一次安全模式没有意义。
+    const offerSafeMode = !safeMode;
+    const buttons = offerSafeMode
+      ? [retryLabel ?? '重启内核', '安全模式启动', '退出']
+      : [retryLabel ?? '重启内核', '退出'];
+    const quitIndex = buttons.length - 1;
+    let choice = quitIndex;
     try {
       choice = dialog.showMessageBoxSync({
         type: 'error',
         title: title ?? 'DeepSeek 内核已停止',
         message: message ?? `dsh 内核已退出${where}`,
-        detail: summarizeStderr(detail),
-        buttons: [retryLabel ?? '重启内核', '退出'],
+        detail: summarizeStderr(detail)
+          + (offerSafeMode
+            ? '\n\n如果这是插件引起的，可以选择「安全模式启动」：只加载插件管理面板，'
+              + '进去把可疑插件关掉再正常重启。'
+            : ''),
+        buttons,
         defaultId: 0,
-        cancelId: 1,
+        cancelId: quitIndex,
         noLink: true,
       });
     } finally {
       crashDialogOpen = false;
     }
-    if (choice === 0) restartKernel();
-    else quitApp();
+    if (choice === quitIndex) return quitApp();
+    if (offerSafeMode && choice === 1) return enterSafeMode();
+    restartKernel();
+  };
+
+  /**
+   * 以安全模式重启内核：跳过除插件管理面板外的所有插件。
+   *
+   * 这是「插件把内核搞崩」唯一的逃生舱 —— 那类故障没有别的自愈路径：回退内置
+   * 内核没用（内置装着同一批插件、用同一份 overlay），删 %APPDATA% 也没用
+   * （插件在安装目录、overlay 每次启动从清单重新生成），不留这条路用户就只能
+   * 等下一个版本。
+   */
+  const enterSafeMode = () => {
+    if (isQuitting) return;
+    safeMode = true;
+    console.warn('[app] 进入安全模式：只加载 safeMode 插件');
+    dialog.showMessageBox({
+      type: 'info',
+      title: '安全模式',
+      message: '正在以安全模式重启内核',
+      detail: '本次启动只加载插件管理面板，其余插件一律跳过。\n\n'
+        + '打开「设置 → 插件」把可疑插件关掉，然后重启应用即可恢复正常启动'
+        + '（安全模式只对本次运行有效，不会记住）。',
+      buttons: ['知道了'],
+      noLink: true,
+    }).catch(() => {});
+    restartKernel();
   };
 
   /** 丢弃当前内核实例并重新拉起一个（崩溃后恢复用）。 */
@@ -197,6 +249,22 @@ if (!gotLock) {
     old.stop().finally(() => { if (!isQuitting) startDsh(); });
   };
 
+  /**
+   * 重启整个应用（先停内核再 relaunch）。内核更新后的「重启以应用更新」与
+   * 插件管理面板的「重启生效」共用这一条已验证的路径：app.exit 会跳过
+   * before-quit/will-quit，不先手动 stop 会留下占着端口的孤儿内核进程。
+   */
+  const restartApp = () => {
+    isQuitting = true;
+    const doRelaunch = () => { app.relaunch(); app.exit(0); };
+    if (dsh && !dsh.stopped) {
+      dsh.stopped = true;
+      dsh.stop().finally(doRelaunch);
+    } else {
+      doRelaunch();
+    }
+  };
+
   const startDsh = () => {
     // 捕获本次实例：回退 / 重启会把 dsh 换成新对象，旧实例的事件必须能被识别并忽略。
     const service = new DshService({
@@ -204,6 +272,8 @@ if (!gotLock) {
       userKernelDir: USER_KERNEL_DIR,
       pluginsDir: PLUGINS_DIR,
       activationPatchPath: ACTIVATION_PATCH_PATH,
+      pluginStatePath: PLUGIN_STATE_PATH,
+      safeMode,
     });
     dsh = service;
 
@@ -303,18 +373,11 @@ if (!gotLock) {
       builtinNodeExe: BUILTIN_NODE_EXE,
       pnpmStoreDir: PNPM_STORE_DIR,
       activationPatchPath: ACTIVATION_PATCH_PATH,
-      onRestart: () => {
-        // 重启以应用更新：先清理 dsh 子进程（app.exit 会跳过 before-quit/will-quit，
-        // 需手动 stop，避免孤儿进程占用端口），再 relaunch + exit。
-        isQuitting = true;
-        const doRelaunch = () => { app.relaunch(); app.exit(0); };
-        if (dsh && !dsh.stopped) {
-          dsh.stopped = true;
-          dsh.stop().finally(doRelaunch);
-        } else {
-          doRelaunch();
-        }
-      },
+      pluginStatePath: PLUGIN_STATE_PATH,
+      // 开发态热更新出的新内核要重装插件，其中 git 依赖插件在仓库 node_modules；
+      // 打包态全部源码都在 resources/plugins，无需这处候选。
+      nodeModulesDir: app.isPackaged ? null : path.join(__dirname, '..', '..', 'node_modules'),
+      onRestart: restartApp,
     });
 
     updater = created;
@@ -375,6 +438,9 @@ if (!gotLock) {
   ipcMain.on('window:minimize', () => win && win.minimize());
   ipcMain.on('window:maximize', () => win && (win.isMaximized() ? win.unmaximize() : win.maximize()));
   ipcMain.on('window:close', () => win && win.close());
+  // 插件管理面板的「重启生效」按钮：走与内核更新相同的重启路径（先停内核再
+  // relaunch，理由见 restartApp 的注释）。
+  ipcMain.on('app:restart', restartApp);
 
   app.on('second-instance', () => {
     if (win && !win.isDestroyed()) showWindow();

@@ -8,7 +8,8 @@ const { app } = require('electron');
 const { resolvePackagedKernel } = require('../shared/kernel-paths');
 const { findFreePort } = require('../shared/net');
 const { findDshBinJsAsync } = require('../shared/dsh-locate');
-const { loadPluginManifest, writeActivationPatch } = require('../shared/plugin-install');
+const { loadPluginManifest, writeActivationPatch, writeSafeModePatch } = require('../shared/plugin-install');
+const { loadPluginState } = require('../shared/plugin-state');
 const { isPortBindFailure, firstBindErrorLine } = require('../shared/error-detail');
 
 const URL_LINE_RE = /dsh web:\s+(https?:\/\/\S+)/;
@@ -40,6 +41,10 @@ class DshService extends EventEmitter {
     this.userKernelDir = opts.userKernelDir ?? null;
     this.pluginsDir = opts.pluginsDir ?? null;
     this.activationPatchPath = opts.activationPatchPath ?? null;
+    this.pluginStatePath = opts.pluginStatePath ?? null;
+    // 安全模式：只加载清单里标了 safeMode 的插件（逃生舱，见 #prepareActivationPatch）。
+    // 会话级，不落盘 —— 重启应用即回到正常模式，不会让用户卡在安全模式里出不来。
+    this.safeMode = opts.safeMode === true;
     this.child = null;
     this.url = null;
     this.stopped = false;
@@ -158,7 +163,14 @@ class DshService extends EventEmitter {
       windowsHide: true,
       // 打上唯一标记：桌面版内核进程可据此与网页版/其他实例精确区分，
       // 避免后续清理进程时误杀正在开发它的 agent 自己。
-      env: { ...process.env, DSH_DESKTOP: '1', DSH_DESKTOP_PARENT_PID: String(process.pid) },
+      // DSH_DESKTOP_SAFE_MODE 让插件管理面板知道自己正跑在安全模式下，好在 UI 上
+      // 说明「插件不是丢了，是被这次启动刻意跳过了」。
+      env: {
+        ...process.env,
+        DSH_DESKTOP: '1',
+        DSH_DESKTOP_PARENT_PID: String(process.pid),
+        ...(this.safeMode ? { DSH_DESKTOP_SAFE_MODE: '1' } : {}),
+      },
     });
 
     this.child.stdout.on('data', (d) => this.#scanStdout(d));
@@ -215,13 +227,24 @@ class DshService extends EventEmitter {
   /**
    * 备好激活 overlay，返回它的路径；缺少插件目录或清单读不出来时返回 null
    * （外壳照常启动，只是插件不生效 —— 好过整个应用起不来）。
+   *
+   * 用户在插件管理面板里关掉的插件不生成 `- insert:` 条目：状态文件在每次
+   * 启动时读一次，所以「切换后重启内核生效」的重启路径走的就是这里。
+   *
+   * 安全模式（`this.safeMode`）下只写清单里标了 `safeMode: true` 的插件，且
+   * **不读用户状态** —— 那是插件把内核搞崩之后的逃生舱，见 plugin-state.js 的
+   * `safeModePlugins`。
    * @returns {string|null}
    */
   #prepareActivationPatch() {
     if (!this.pluginsDir || !this.activationPatchPath) return null;
     try {
       const plugins = loadPluginManifest(this.pluginsDir);
-      return writeActivationPatch(this.activationPatchPath, this.pluginsDir, plugins);
+      if (this.safeMode) {
+        return writeSafeModePatch(this.activationPatchPath, plugins);
+      }
+      const userState = loadPluginState(this.pluginStatePath);
+      return writeActivationPatch(this.activationPatchPath, plugins, userState);
     } catch (error) {
       this.logger.warn('[dsh] 生成插件激活 overlay 失败，插件将不生效:', error?.message ?? error);
       return null;

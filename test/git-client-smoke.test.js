@@ -13,7 +13,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const CLIENT = path.join(__dirname, '..', 'plugins', 'dsh-git', 'lib', 'client.js');
+const CLIENT = path.join(__dirname, '..', 'node_modules', 'dsh-git', 'lib', 'client.js');
 
 /** 把伪造的 React 元素树拍平成数组，便于查找。 */
 function flatten(node, out = []) {

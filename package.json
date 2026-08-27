@@ -13,10 +13,17 @@
     "icon": "node scripts/gen-icon.mjs",
     "install-plugin": "node scripts/install-plugin.mjs",
     "prepare-kernel": "node scripts/prepare-kernel.mjs",
-    "dist": "node scripts/install-plugin.mjs && node scripts/prepare-kernel.mjs && node scripts/verify-kernel.mjs && node scripts/pack-kernel.mjs && electron-builder --win && node scripts/collect-release.mjs",
-    "dist:dir": "node scripts/install-plugin.mjs && node scripts/prepare-kernel.mjs && node scripts/verify-kernel.mjs && node scripts/pack-kernel.mjs && electron-builder --win --dir",
+    "dist": "node scripts/install-plugin.mjs && node scripts/prepare-kernel.mjs && node scripts/verify-kernel.mjs && node scripts/pack-kernel.mjs && node scripts/pack-plugins.mjs && electron-builder --win && node scripts/collect-release.mjs",
+    "dist:dir": "node scripts/install-plugin.mjs && node scripts/prepare-kernel.mjs && node scripts/verify-kernel.mjs && node scripts/pack-kernel.mjs && node scripts/pack-plugins.mjs && electron-builder --win --dir",
     "verify-kernel": "node scripts/verify-kernel.mjs",
-    "pack-kernel": "node scripts/pack-kernel.mjs"
+    "pack-kernel": "node scripts/pack-kernel.mjs",
+    "pack-plugins": "node scripts/pack-plugins.mjs"
+  },
+  "dependencies": {
+    "dsh-git": "github:EasyTZ/dsh-git#v0.1.1",
+    "dsh-reveal-explorer": "github:EasyTZ/dsh-reveal-explorer#v0.1.1",
+    "dsh-terminal-panel": "github:EasyTZ/dsh-terminal-panel#v0.1.1",
+    "dsh-ui-balance": "github:EasyTZ/dsh-ui-balance#v0.1.1"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

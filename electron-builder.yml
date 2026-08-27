@@ -20,7 +20,9 @@ extraResources:
     filter:
       - "**/*"
   # 插件源码 + 清单：热更新新内核后，据此把自定义插件重装进新版内核。
-  - from: plugins
+  # 拆仓后源码分散在 plugins/（桌面专属）与 node_modules/（git 依赖）两处，
+  # 由 scripts/pack-plugins.mjs 按 plugins.json 摊平到 plugins-dist/ 再进包。
+  - from: plugins-dist
     to: plugins
     filter:
       - "**/*"

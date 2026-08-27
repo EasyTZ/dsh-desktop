@@ -10,7 +10,8 @@ const {
   dshManifestPath, kernelNodeModulesDir, readKernelVersion, resolvePackagedKernel,
 } = require('../shared/kernel-paths');
 const { findFreePort } = require('../shared/net');
-const { loadPluginManifest, installPlugin, writeActivationPatch } = require('../shared/plugin-install');
+const { loadPluginManifest, installPlugin, resolvePluginSrcDir, writeActivationPatch } = require('../shared/plugin-install');
+const { loadPluginState } = require('../shared/plugin-state');
 
 const REGISTRY_PRESETS = [
   'https://registry.npmmirror.com',
@@ -71,6 +72,10 @@ class KernelUpdater extends EventEmitter {
     this.builtinNodeExe = opts.builtinNodeExe;
     this.pnpmStoreDir = opts.pnpmStoreDir ?? null;
     this.activationPatchPath = opts.activationPatchPath ?? null;
+    this.pluginStatePath = opts.pluginStatePath ?? null;
+    // 开发态传仓库根的 node_modules（git 依赖插件在那里）；打包态全部插件源码
+    // 都在 extraResources 的 plugins/ 下，传 null 只查那一处。
+    this.nodeModulesDir = opts.nodeModulesDir ?? null;
     this.onRestart = opts.onRestart ?? null;
 
     /** @type {{ phase: string, currentVersion: string|null, latestVersion: string|null,
@@ -371,9 +376,14 @@ class KernelUpdater extends EventEmitter {
     for (const plugin of plugins) {
       try {
         installPlugin({
-          pluginSrcDir: path.join(this.pluginsDir, plugin.srcDir),
+          pluginSrcDir: resolvePluginSrcDir({
+            pluginsDir: this.pluginsDir,
+            nodeModulesDir: this.nodeModulesDir,
+            packageName: plugin.packageName,
+          }),
           nodeModulesDir: kernelNodeModulesDir(kernelDir),
           manifestPath: dshManifestPath(kernelDir),
+          expectedName: plugin.packageName,
           logger: this.logger,
         });
       } catch (error) {
@@ -384,14 +394,15 @@ class KernelUpdater extends EventEmitter {
 
   /**
    * 备好自检用的激活 overlay，返回路径；不可用时返回 null。与 DshService 写同一
-   * 个文件、同一份内容，所以先后顺序无所谓。
+   * 个文件、同一份内容（含用户开关状态——关掉的插件同样不该出现在自检里），
+   * 所以先后顺序无所谓。
    * @returns {string|null}
    */
   _activationPatch() {
     if (!this.pluginsDir || !this.activationPatchPath) return null;
     try {
       return writeActivationPatch(
-        this.activationPatchPath, this.pluginsDir, loadPluginManifest(this.pluginsDir),
+        this.activationPatchPath, loadPluginManifest(this.pluginsDir), loadPluginState(this.pluginStatePath),
       );
     } catch (error) {
       this.logger.warn('[updater] 生成激活 overlay 失败，自检将不含插件:', error?.message ?? error);

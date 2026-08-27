@@ -87,11 +87,23 @@ npm run icon             # 仅在改了 build/logo.svg 后重新生成 icon.png/
 
 跑单个测试文件：`node --test test/version.test.js`；按名字跑单个用例：`node --test --test-name-pattern "prerelease" "test/*.test.js"`。
 
-打包机前置：Node ≥ 22、`npm i -g @deepseek-ai/dsh`、`npm i -g pnpm`。
+打包机前置：Node ≥ 22、`npm i -g @deepseek-ai/dsh`、`npm i -g pnpm`、仓库根 `npm install`（拉插件 git 依赖，见下方「插件拆分后的开发内环」）。
 
 **顺序很重要**：`install-plugin` 必须先于 `prepare-kernel`。`prepare-kernel` 是整目录 `cpSync` 全局 dsh 安装目录，插件源码与依赖登记是搭便车进入内核的；顺序反了产物里就没有插件。`dist` / `dist:dir` 已经把 `install-plugin` 串在最前面，靠脚本本身保证顺序，不用再靠人记住——单独跑 `prepare-kernel` 或手动分步操作时仍需自己注意这条。同理，每次 `npm i -g @deepseek-ai/dsh` 升级后都要重跑 `install-plugin`（这也是为什么 `dist` 每次都无条件带上它，而不是假设「上次装过就还在」）。
 
 （激活条目不再搭这趟车 —— 它由启动时的 `--patch` overlay 提供。）
+
+### 插件拆分后的开发内环
+
+四个通用插件已拆成独立仓库（`EasyTZ/dsh-git`、`dsh-terminal-panel`、`dsh-ui-balance`、`dsh-reveal-explorer`），本仓库通过 `package.json` 里的 git 依赖（**钉 tag，不钉分支**——钉分支会让打包不可复现）vendor 进 `node_modules/`。改插件代码的两种方式：
+
+- **只想验证**：改完插件仓库 → push + 打 tag → 回本仓库把 `package.json` 里对应的 `#tag` 升一下 → `npm install`。
+- **高频联调**（推荐）：把本仓库 `node_modules/<插件名>` 换成插件仓库工作副本的链接或 `file:` 依赖——`npm link ../dsh-git`（或把根依赖临时改成 `"dsh-git": "file:../dsh-git"`），改完立刻能测，不用每次 push/tag。**只在真正发版时才 push + 打 tag**，然后回本仓库更新钉住的版本号。
+
+拆仓带来的两个**主动接受的代价**（不是待修 bug）：
+
+- `dependencies` 不再为空（4 条插件 git 依赖），但这些依赖只被 vendor 源码、从不被运行时 require——真正跑插件的是内核进程里的那份拷贝。也因此根安装不解析插件的 peer（`.npmrc` 开了 `legacy-peer-deps`，插件 peer 由内核提供）。
+- 首次拉取插件 tag 需要联网；lockfile 未变时重复构建仍不联网。
 
 路径覆盖环境变量（脚本与 DshService 共用同一套探测逻辑）：`DSH_INSTALL_DIR`、`DSH_NODE_EXE`、`DSH_BIN_JS`、`DSH_PNPM_DIR`。
 
@@ -162,7 +174,15 @@ test/         node:test 用例
 
 ### 自定义插件契约（最容易出错的地方）
 
-`plugins/plugins.json` 是唯一清单（`srcDir` / `entryId`），新增插件只加一项。实现**只有一份**，在 `src/shared/plugin-install.js`。
+`plugins/plugins.json` 是唯一清单（`packageName` / `entryId` / 可选 `enabled`）。实现**只有一份**，在 `src/shared/plugin-install.js`。
+
+**`entryId` 一律带 `dsdesktop-` 前缀**（由 `test/plugin-install.test.js` 强制）。`- insert:` 不去重，我们的 id 若与上游 bundle 里某条同名就是 `duplicate loader entry id` → 内核秒退。上游 130+ 个 id 里大量是 `git` / `session` / `settings` / `storage` 这类通用词，而内核会自己热更新到新版本 —— 不加前缀的话撞车只是时间问题，且发生在用户机器上、表现为黑屏。前缀取 `dsdesktop-` 而非 `desktop-`：上游已有 web / tui / headless 三个 surface，将来真加一个 desktop surface 时 `desktop-` 反而可能被它用掉。
+
+源码位置（拆仓后有两处，`resolvePluginSrcDir` 统一解析）：桌面专属插件放 `plugins/<packageName>/`；通用插件作为 git 依赖 vendor 在 `node_modules/<packageName>/`。**新增插件**要做三件事：插件源码就位（两处之一）、`plugins.json` 加一条、若走 git 依赖还要在根 `package.json` 加依赖。装插件只按清单办事，不会去别处找源码。
+
+用户开关状态（插件管理面板）在 `userData/plugin-state.json`，只记录**偏离清单默认值**的项：`enabled` 缺省视为 `true`（向后兼容旧清单），用户状态覆盖清单默认值；被关掉的插件**照样装、只是不激活**（激活 overlay 里不生成它的 `- insert:` 条目）。
+
+读写两侧**刻意分处两地**，别把任何一边"收拢"回去：读侧（合并）在 `src/shared/plugin-state.js`，`DshService` 与 `kernel-updater` 生成 overlay 时都要用；写侧在 `plugins/dsh-plugin-manager/lib/pure.js`，因为唯一的写者是插件的 node 半，它跑在**内核进程**里、`import` 不到 `src/shared/`。曾经在 shared 也放过一份写侧实现，结果是没有调用者的死代码，并且和真写者悄悄分叉（真写者当时总写显式值，与"只记偏离"的文档不符）。两边唯一共享的是「`enabled` 缺省为 true」这条规则，改它要同时改 `pure.js` 的 `manifestEnabled`。
 
 **装**（`installPlugin`，两件事，缺一不可）：
 
@@ -171,7 +191,9 @@ test/         node:test 用例
 
 第 2 步是硬约束：dsh 运行时靠 `healProfilesModuleFallback` 遍历依赖闭包，在 `$DSH_HOME/profiles/node_modules` 建解析软链。只拷贝不登记 → 内核 `import` 时 `ERR_MODULE_NOT_FOUND` → 进程秒退 → 桌面端黑屏（v1.1.1 事故）。两条路径共用这份实现，各自只负责解析目录：`scripts/install-plugin.mjs`（构建期，全局 dsh，嵌套布局）与 `kernel-updater.js` 的 `_installPlugins`（运行期，热更新出的新内核，hoisted 布局）。
 
-**激活**：走 dsh 官方的 `--patch` overlay（patch 层栈第 4 层）。`renderActivationPatch` 由清单生成条目，`writeActivationPatch` 落到 `userData/desktop.patch.yml`，`DshService` 与 `kernel-updater._verify` 各写一次同样的内容。**发行包自带的 `cordis.patch.yml` 不再被我们改。**
+**安全模式**（`plugins.json` 的 `safeMode: true`）：崩溃对话框上的第三个按钮「安全模式启动」只加载标了这个字段的插件——当前只有插件管理面板，`test/plugin-install.test.js` 会强制清单里至少留一个。这是「插件把内核搞崩」唯一的逃生舱：那类故障**没有别的自愈路径**，回退内置内核没用（内置装着同一批插件、用同一份 overlay），删 `%APPDATA%` 也没用（插件在安装目录、overlay 每次启动从清单重新生成），不留这条路用户就只能等下一个版本。两条设计约束：安全模式**只存在于内存**（`index.js` 的 `safeMode` 变量），重启应用即回到正常模式，不需要再造一个「怎么退出安全模式」的入口；生成 overlay 走独立的 `writeSafeModePatch`，它**完全绕开开关判定**（用户状态与清单 `enabled` 都不看）——插件集在 `safeModePlugins` 那步已选定，再过一遍开关只可能把恢复入口本身滤掉，而这功能恰恰是在「开关状态可能有问题」时用的。外壳同时注入 `DSH_DESKTOP_SAFE_MODE=1`，面板据此显示提示条，否则用户只看到一列「未激活」会更慌。
+
+**激活**：走 dsh 官方的 `--patch` overlay（patch 层栈第 4 层）。`renderActivationPatch` 由清单生成条目（被用户关掉的插件不生成），`writeActivationPatch` 落到 `userData/desktop.patch.yml`，`DshService` 与 `kernel-updater._verify` 各写一次同样的内容（**都带上用户开关状态**）。**发行包自带的 `cordis.patch.yml` 不再被我们改。**
 
 三个必须记住的坑：
 
@@ -179,14 +201,17 @@ test/         node:test 用例
 - **绝不要再往发行包的 `cordis.patch.yml` 里写东西**。`- insert:` 不去重：bundle 里有一条、overlay 再给一条，cordis loader 会抛 `duplicate loader entry id` 让内核**秒退**，与 v1.1.1 同一类致命失败。v1.2.0 从 v1.1.x 升级时，用户 `%APPDATA%` 里被老版本篡改过的热更新内核就会撞上这个 —— 靠「秒退 → 删用户内核 → 回退内置 → 静默重启」自愈，代价是重下一次内核。
 - **`_verify` 必须带 overlay**。不带就是验了一个「没有插件的内核」，而真正启动是带着 overlay 跑的 —— 插件加载阶段的崩溃会整个溜过自检。
 
-### 现有的四个插件
+### 现有的五个插件
 
-| 目录 | entryId | 干什么 | 接入的槽 |
+通用插件已拆仓（本仓库 vendor），源码在 `node_modules/` 下；`dsh-plugin-manager` 是桌面专属，源码在 `plugins/` 下。
+
+| 插件 | entryId | 干什么 | 接入的槽 |
 |---|---|---|---|
-| `dsh-ui-balance` | `balance` | 每条回复下方显示 DeepSeek 余额 | `conversation.chat.turnTail` |
-| `dsh-git` | `git` | Git 面板（改动/暂存/提交/推送/切分支/撤销） | `sidebar.footer.action`（`order: 100`）+ `shell.overlay` |
-| `dsh-terminal-panel` | `terminal-panel` | 终端面板（命令控制台） | `sidebar.footer.action`（`order: 90`）+ `shell.overlay` |
-| `dsh-reveal-explorer` | `reveal-explorer` | 在系统文件管理器中打开工作区 | `conversation.session.header.utilities` |
+| `dsh-ui-balance` | `dsdesktop-balance` | 每条回复下方显示 DeepSeek 余额 | `conversation.chat.turnTail` |
+| `dsh-git` | `dsdesktop-git` | Git 面板（改动/暂存/提交/推送/切分支/撤销） | `sidebar.footer.action`（`order: 100`）+ `shell.overlay` |
+| `dsh-terminal-panel` | `dsdesktop-terminal-panel` | 终端面板（命令控制台） | `sidebar.footer.action`（`order: 90`）+ `shell.overlay` |
+| `dsh-reveal-explorer` | `dsdesktop-reveal-explorer` | 在系统文件管理器中打开工作区 | `conversation.session.header.utilities` |
+| `dsh-plugin-manager` | `dsdesktop-plugin-manager` | 设置页里列出自带插件并逐个开关（重启生效）；`safeMode: true`，是安全模式下唯一加载的插件 | `settings.plugins.tab`（`order: 20`） |
 
 **槽的两条通用规则**（翻上游类型声明与 frontend bundle 得来）：
 
@@ -206,13 +231,13 @@ test/         node:test 用例
 
 ### 客户端半怎么测
 
-`plugins/*/lib/client.js` **不在 `npm run typecheck` 的 `include` 里**，`node --check` 又只查语法。`useCallback` / `useEffect` 的依赖数组在 render 时立即求值，引用一个后面才声明的 `const` 会触发 TDZ、组件整个渲染崩溃 —— 表现就是「面板打不开」，而这类错误只有真实执行组件函数才会暴露。`test/terminal-client-smoke.test.js` 就是这道防线：在 node 里伪造 `window` / React，真跑一遍 factory、`apply()` 与两个槽组件的渲染路径。新写客户端插件时照抄它。
+客户端插件源码（`plugins/dsh-plugin-manager/lib/client.js`、拆仓后的 `node_modules/dsh-*/lib/client.js`）**不在 `npm run typecheck` 的 `include` 里**，`node --check` 又只查语法。`useCallback` / `useEffect` 的依赖数组在 render 时立即求值，引用一个后面才声明的 `const` 会触发 TDZ、组件整个渲染崩溃 —— 表现就是「面板打不开」，而这类错误只有真实执行组件函数才会暴露。`test/terminal-client-smoke.test.js` 就是这道防线：在 node 里伪造 `window` / React，真跑一遍 factory、`apply()` 与槽组件的渲染路径。新写客户端插件时照抄它（git / plugin-manager 各有同款）。
 
 纯逻辑（行模型、ANSI、哨兵、补全切词）另外放在 `lib/pure.js`：**零 import**，`test/` 可以直接 `import`，也因此会被 tsc 顺带检查。
 
 ### 写一个 dsh 插件
 
-最小参照 `plugins/dsh-ui-balance/`，带面板与多路由的完整参照看 `plugins/dsh-git/`。dsh 插件是**双面**的，两半在不同进程里跑，`package.json` 同时声明：
+最小参照 `node_modules/dsh-ui-balance/`（拆仓后的 vendor 位置），带面板与多路由的完整参照看 `node_modules/dsh-git/`；桌面专属插件（不进独立仓库）的参照看 `plugins/dsh-plugin-manager/`。dsh 插件是**双面**的，两半在不同进程里跑，`package.json` 同时声明：
 
 ```jsonc
 {
@@ -227,6 +252,8 @@ test/         node:test 用例
 ```
 
 **node 半**（`lib/index.js`）：默认导出一个 cordis `Service` 子类，`static inject = ["webServer"]` 声明依赖，构造时用 `ctx.effect(() => ..., "描述")` 注册资源（effect 的返回值是清理函数，热重载靠它）。取别的服务用 `ctx.get("credentials")` —— 可能是 `undefined`，必须判。
+
+**模块顶层不许有会抛的同步 IO**（`readFileSync` / `execSync` / `statSync` …）。插件是被内核 `import` 进来的，顶层抛异常 = 内核在 boot 阶段秒退 = 桌面端黑屏，而这类失败**没有自愈路径**：删用户内核回退内置也没用（内置装着同一批插件、用同一份 overlay），删 `%APPDATA%` 也没用（插件在安装目录、overlay 从清单重新生成），只能等新版本。真要在顶层读文件就 `try/catch` 后退化成常量（例：`dsh-plugin-manager` 的 `readOwnName()`），或者挪进构造函数/请求处理里——那里抛出来最多是这个插件不可用，不会带走整个内核。
 
 **浏览器半**（`lib/client.js`）：**不是普通 ESM**。它由 `dsh-client-modules` 按 `/plugins/<id>/client.js` 单独服务，不进 `dsh-web-frontend` 的 bundle，所以写成 `window.__ModuleLoader__.load({ id, factory })`，在 factory 里 `require("react/jsx-runtime")` 取宿主的 React。导出 `apply(ctx)` 与 `inject`。挂槽：
 
@@ -254,7 +281,7 @@ Windows toast 还要求存在指向本应用、且 AppUserModelID 与 `app.setAp
 
 ## 打包要点
 
-`electron-builder.yml`：`asar` 只打 `src/**` + `package.json`（本项目无生产依赖，`beforeBuild` 返回 `false` 跳过 install/rebuild）；`kernel/` 与 `plugins/` 走 extraResources（plugins 源码必须进包，热更新后要靠它重装插件）；`electronDist: node_modules/electron/dist` 复用本机 Electron，打包不联网。
+`electron-builder.yml`：`asar` 只打 `src/**` + `package.json`（生产依赖只是 vendor 用的插件 git 依赖，`beforeBuild` 返回 `false` 跳过 install/rebuild）；`kernel/` 与 `plugins-dist/` 走 extraResources（插件源码必须进包，热更新后要靠它重装插件；`plugins-dist/` 由 `scripts/pack-plugins.mjs` 按清单把 `plugins/` 与 `node_modules/` 两处源码摊平而成）；`electronDist: node_modules/electron/dist` 复用本机 Electron。**首次** `npm install`（拉插件 git 依赖）需要联网，lockfile 未变时的重复构建不联网——这是拆仓主动接受的代价。
 
 `collect-release.mjs` 按 `package.json` 的 `version` **精确匹配**产物名，改版本号时 dist/ 里的旧产物不会被误选。发版流程：改 `package.json` version → 在 README「更新内容」加一节 → `npm run dist`。
 
@@ -262,7 +289,7 @@ Windows toast 还要求存在指向本应用、且 AppUserModelID 与 `app.setAp
 
 - 主进程代码用 CommonJS + `'use strict'`，私有成员用 `#` 前缀；`scripts/` 用 ESM。
 - 注释写中文，且解释「为什么」而非「做什么」——现有注释里大量记录了踩过的坑（pnpm 退出码、runtime/ 子目录、WebSocket-only 事件流等），改这些地方前先读注释。
-- 不引第三方运行时依赖（`version.js` 手写 semver 比较就是为此），保持 `dependencies` 为空；测试用 Node 内置 `node:test`。
+- **不引第三方运行时依赖**（`version.js` 手写 semver 比较就是为此），测试用 Node 内置 `node:test`。`dependencies` 里的 4 条插件 git 依赖是唯一例外：它们只被 vendor 源码、从不被运行时 require，真正跑插件的是内核进程里的那份拷贝——不是运行时依赖，是「源码进包的运输方式」。
 - 不写死机器专属路径。定位全局安装一律走 `src/shared/dsh-locate.js`（`npm root -g` + APPDATA + 环境变量覆盖）。
 - Windows 上不要用 `shell: true` 拼命令（触发 DEP0190）；`npm` 是 `.cmd`，Node 禁止直接 spawn，需显式走 `cmd.exe` —— 已封装在 `dsh-locate.js` 的 `npmRootCommand()`。
 - 类型检查靠 `tsconfig.json` 的 `checkJs`（`npm run typecheck` 必须为 0 错误），**不引入编译步骤**：原因写在 tsconfig 顶部注释里。

@@ -5,3 +5,4 @@ _smoke/
 release/
 *.log
 kernel-dist/
+plugins-dist/

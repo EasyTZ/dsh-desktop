@@ -18,18 +18,37 @@
 // 内核都要重改一遍、还得猜这文件在 hoisted 顶层还是嵌套位置。现在改走 dsh 官方的
 // `--patch` overlay（patch 层栈的第 4 层，本来就是留给调用方的）：激活条目由
 // renderActivationPatch 生成到我们自己的文件里，发行包保持原样。
+//
+// 插件源码的位置（拆仓后有两处）：
+//   - plugins/<packageName>       随本仓库走的桌面专属插件（如 dsh-plugin-manager）
+//   - node_modules/<packageName>  根 package.json 的 git 依赖 vendor 进来的通用插件
+// 由 resolvePluginSrcDir 统一解析，两条安装路径与打包脚本共用。
 
 /** @typedef {{ log: (...args: any[]) => void, warn: (...args: any[]) => void }} Logger */
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { isPluginEnabled, safeModePlugins } = require('./plugin-state');
 
-/** 读插件清单 plugins.json（单一数据源）。 */
+/**
+ * 读插件清单 plugins.json（单一数据源）。packageName / entryId 在这里强校验：
+ * 清单字段错了会让激活条目指向不存在的模块，内核 boot 时秒退——与其让用户看
+ * 黑屏，不如在装的时候就大声失败。
+ * @returns {Array<{packageName: string, entryId: string, enabled?: boolean, safeMode?: boolean}>}
+ */
 function loadPluginManifest(pluginsDir) {
   const manifestPath = path.join(pluginsDir, 'plugins.json');
   const plugins = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   if (!Array.isArray(plugins)) {
     throw new Error(`plugins.json 必须是数组: ${manifestPath}`);
+  }
+  for (const plugin of plugins) {
+    if (typeof plugin?.packageName !== 'string' || plugin.packageName.length === 0) {
+      throw new Error(`plugins.json 条目缺少 packageName: ${JSON.stringify(plugin)}`);
+    }
+    if (typeof plugin?.entryId !== 'string' || plugin.entryId.length === 0) {
+      throw new Error(`plugins.json 条目缺少 entryId: ${JSON.stringify(plugin)}`);
+    }
   }
   return plugins;
 }
@@ -47,12 +66,24 @@ function readPluginPackage(pluginSrcDir) {
   };
 }
 
-/** 在若干候选位置里找出第一个存在的 bundle patch；都不存在返回 null。 */
-function findExistingPath(candidates) {
-  for (const c of candidates) {
-    if (c && fs.existsSync(c)) return c;
+/**
+ * 解析插件源码目录：先查 plugins/<packageName>（随仓库走的），再查
+ * node_modules/<packageName>（git 依赖 vendor 的）。打包态只有 resources/plugins
+ * 一处（extraResources 已把全部源码摊进去），nodeModulesDir 传 null 即可。
+ *
+ * 判存在用「目录里有 package.json」而不是「目录存在」：node_modules 里同名
+ * 空目录（安装中途失败留下的）不该被当成可用源码。
+ * @param {{ pluginsDir?: string|null, nodeModulesDir?: string|null, packageName: string }} opts
+ * @returns {string}
+ */
+function resolvePluginSrcDir({ pluginsDir, nodeModulesDir, packageName }) {
+  const candidates = [];
+  if (pluginsDir) candidates.push(path.join(pluginsDir, packageName));
+  if (nodeModulesDir) candidates.push(path.join(nodeModulesDir, packageName));
+  for (const dir of candidates) {
+    if (fs.existsSync(path.join(dir, 'package.json'))) return dir;
   }
-  return null;
+  throw new Error(`未找到插件源码: ${packageName}（找过 ${candidates.join(' ; ') || '（无候选位置）'}）`);
 }
 
 /** 1) 拷贝插件源码到目标 node_modules。 */
@@ -60,26 +91,46 @@ function copyPluginSource(pluginSrcDir, nodeModulesDir, packageName) {
   const dst = path.join(nodeModulesDir, ...packageName.split('/'));
   fs.rmSync(dst, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(dst), { recursive: true });
-  fs.cpSync(pluginSrcDir, dst, { recursive: true });
+  // dereference：本地联调常用 npm link / file: 协议把 node_modules 指到插件仓库的
+  // 工作副本，源码目录会是符号链接；cpSync 默认把链接原样复制过去，内核拿到一个
+  // 断链。跟随链接拷实体，两种开发方式都不踩坑。
+  fs.cpSync(pluginSrcDir, dst, { recursive: true, dereference: true });
   return dst;
 }
 
 /**
- * 生成 `--patch` overlay 的内容：把清单里每个插件变成一条 `- insert:` 激活条目。
+ * 生成 `--patch` overlay 的内容：把清单里每个**激活的**插件变成一条 `- insert:`
+ * 条目。被用户关掉的插件不出现在 overlay 里（源码照样装，只是不激活——见
+ * plugin-state.js 的说明）。
  *
  * 这是「装插件」与「激活插件」分家之后，激活那一半的唯一实现。overlay 作用在
  * 发行包自带的 bundle 层之上，效果与过去直接改 bundle 等价（`--dump-config`
  * 比对过，合成树逐行一致）。
  *
- * @param {string} pluginsDir
- * @param {Array<{srcDir: string, entryId: string}>} plugins
+ * 包名直接取清单的 packageName，不读插件源码：拆仓后源码在开发态的
+ * node_modules、打包态的 resources/plugins，路径两套，靠读源码取包名会把
+ * 「路径解析」泄漏进这条本可以纯函数的逻辑。名字一致性由 installPlugin 的
+ * expectedName 校验兜住。
+ *
+ * @param {Array<{packageName: string, entryId: string, enabled?: boolean, safeMode?: boolean}>} plugins
+ * @param {Record<string, boolean>} [userState] 用户开关状态（userData/plugin-state.json）
  * @returns {string}
  */
-function renderActivationPatch(pluginsDir, plugins) {
-  const rows = plugins.map((plugin) => {
-    const { packageName } = readPluginPackage(path.join(pluginsDir, plugin.srcDir));
-    return `    - id: ${plugin.entryId}\n      name: '${packageName}'\n`;
-  });
+function renderActivationPatch(plugins, userState = {}) {
+  return renderPatchFor(plugins.filter((plugin) => isPluginEnabled(plugin, userState)));
+}
+
+/**
+ * 把**已经选定**的插件渲染成 overlay 文本。选谁是调用方的事，这里不再过滤——
+ * 正常启动按用户开关选，安全模式按 `safeMode` 标记选，两条路选完都到这儿。
+ * @param {Array<{packageName: string, entryId: string}>} selected
+ * @returns {string}
+ */
+function renderPatchFor(selected) {
+  const rows = selected
+    .map((plugin) => `    - id: ${plugin.entryId}\n      name: '${plugin.packageName}'\n`);
+  // 空清单（或全部被关掉）时输出合法的空 YAML 列表 `[]`，不能是空文件——
+  // 否则 dsh 解析 patch 时直接报错。
   return '# 由 dsDesktop 生成，请勿手改；插件清单见 plugins/plugins.json。\n'
     + (rows.length ? `- insert:\n${rows.join('')}` : '[]\n');
 }
@@ -89,13 +140,31 @@ function renderActivationPatch(pluginsDir, plugins) {
  * 两处共用同一份内容 —— 同一份配置两个写者迟早会不一致。
  *
  * @param {string} patchPath
- * @param {string} pluginsDir
- * @param {Array<{srcDir: string, entryId: string}>} plugins
+ * @param {Array<{packageName: string, entryId: string, enabled?: boolean, safeMode?: boolean}>} plugins
+ * @param {Record<string, boolean>} [userState]
  * @returns {string} patchPath
  */
-function writeActivationPatch(patchPath, pluginsDir, plugins) {
+function writeActivationPatch(patchPath, plugins, userState) {
   fs.mkdirSync(path.dirname(patchPath), { recursive: true });
-  fs.writeFileSync(patchPath, renderActivationPatch(pluginsDir, plugins), 'utf8');
+  fs.writeFileSync(patchPath, renderActivationPatch(plugins, userState), 'utf8');
+  return patchPath;
+}
+
+/**
+ * 写安全模式的激活 overlay：只留清单里标了 `safeMode` 的插件。
+ *
+ * **完全绕开开关判定**（用户状态与清单 `enabled` 都不看）：安全模式的插件集
+ * 在 `safeModePlugins` 那一步就已经选定，再过一遍开关只可能把恢复入口也滤掉
+ * —— 而这个功能恰恰是在「开关状态可能有问题」时用的：状态文件被手改坏、
+ * 或恢复入口自己被关掉，逃生舱就进不去了。
+ *
+ * @param {string} patchPath
+ * @param {Array<{packageName: string, entryId: string, enabled?: boolean, safeMode?: boolean}>} plugins
+ * @returns {string} patchPath
+ */
+function writeSafeModePatch(patchPath, plugins) {
+  fs.mkdirSync(path.dirname(patchPath), { recursive: true });
+  fs.writeFileSync(patchPath, renderPatchFor(safeModePlugins(plugins)), 'utf8');
   return patchPath;
 }
 
@@ -111,21 +180,31 @@ function registerDependency(manifestPath, packageName, version) {
 
 /**
  * 安装一个插件：拷贝源码 + 登记依赖。激活不在这里 —— 那是启动时 `--patch`
- * overlay 的事（见文件头注释）。
+ * overlay 的事（见文件头注释）。被用户关掉的插件也照样装：登记依赖是
+ * healProfilesModuleFallback 的输入，随意摘除会引入新的解析失败面，而且重新
+ * 打开时不需要再装一次。
  *
  * @param {object} opts
  * @param {string} opts.pluginSrcDir   插件源码目录
  * @param {string} opts.nodeModulesDir 目标 node_modules（dsh 能从这里解析到插件）
  * @param {string} opts.manifestPath   dsh 的 package.json 路径
+ * @param {string} [opts.expectedName] 清单里声明的包名；与插件 package.json 的
+ *   name 不一致时报错——激活条目的 name 来自清单，两边不一致等于激活了一个
+ *   不存在的模块，内核 boot 时秒退，必须在装的时候就拦下。
  * @param {Logger} [opts.logger]
  */
 function installPlugin(opts) {
-  const { pluginSrcDir, nodeModulesDir, manifestPath, logger = console } = opts;
+  const { pluginSrcDir, nodeModulesDir, manifestPath, expectedName, logger = console } = opts;
 
   if (!fs.existsSync(pluginSrcDir)) {
     throw new Error(`未找到插件源码: ${pluginSrcDir}`);
   }
   const { packageName, version } = readPluginPackage(pluginSrcDir);
+  if (expectedName !== undefined && packageName !== expectedName) {
+    throw new Error(
+      `清单 packageName（${expectedName}）与插件 package.json 的 name（${packageName}）不一致: ${pluginSrcDir}`
+    );
+  }
 
   const dst = copyPluginSource(pluginSrcDir, nodeModulesDir, packageName);
   logger.log(`[plugin] 已拷贝: ${dst}`);
@@ -141,10 +220,11 @@ function installPlugin(opts) {
 module.exports = {
   loadPluginManifest,
   readPluginPackage,
-  findExistingPath,
+  resolvePluginSrcDir,
   copyPluginSource,
   renderActivationPatch,
   writeActivationPatch,
+  writeSafeModePatch,
   registerDependency,
   installPlugin,
 };

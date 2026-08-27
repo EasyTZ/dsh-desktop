@@ -7,16 +7,18 @@ const os = require('node:os');
 const path = require('node:path');
 const {
   loadPluginManifest, readPluginPackage, installPlugin, registerDependency,
-  renderActivationPatch, writeActivationPatch,
+  renderActivationPatch, writeActivationPatch, writeSafeModePatch, resolvePluginSrcDir,
 } = require('../src/shared/plugin-install');
 
 // 插件安装必须做满两件事：拷贝源码 / 登记依赖。漏掉登记时 dsh 运行期的
 // healProfilesModuleFallback 建不出解析软链，内核 import 插件即 ERR_MODULE_NOT_FOUND
 // 秒退，桌面端表现为黑屏 —— 这正是 v1.1.1 补丁版本的事故原因。这里把契约钉死。
 //
-// 激活改由 `--patch` overlay 提供，对应 renderActivationPatch / writeActivationPatch。
+// 激活改由 `--patch` overlay 提供（renderActivationPatch / writeActivationPatch），
+// 且只包含「用户没关掉的」插件 —— 用户开关状态覆盖清单默认值（enabled 字段，
+// 缺省 true），合并逻辑在 src/shared/plugin-state.js。
 
-const PKG = '@deepseek-ai/dsh-ui-test';
+const PKG = 'dsh-ui-test';
 const silent = { log() {}, warn() {} };
 
 /** 造一套「插件源码 + 目标 dsh 安装目录」的临时现场。 */
@@ -43,10 +45,21 @@ test('installPlugin: 拷贝 + 登记依赖，两件事一次做满', () => {
   const f = makeFixture();
   installPlugin({ ...f, logger: silent });
 
-  const dst = path.join(f.nodeModulesDir, '@deepseek-ai', 'dsh-ui-test');
+  const dst = path.join(f.nodeModulesDir, PKG);
   assert.ok(fs.existsSync(path.join(dst, 'lib', 'index.js')), '插件源码应被拷贝');
   assert.strictEqual(readDeps(f.manifestPath)[PKG], '1.2.3', '漏这步就是黑屏');
 
+  fs.rmSync(f.root, { recursive: true, force: true });
+});
+
+test('installPlugin: 清单包名与插件 package.json 的 name 不一致时报错', () => {
+  // 激活条目的 name 来自清单、模块来自插件源码——两边不一致等于激活一个不存在
+  // 的模块，内核 boot 时秒退。必须在装的时候就拦下，而不是让用户看黑屏。
+  const f = makeFixture();
+  assert.throws(
+    () => installPlugin({ ...f, expectedName: 'another-name', logger: silent }),
+    /不一致/,
+  );
   fs.rmSync(f.root, { recursive: true, force: true });
 });
 
@@ -79,33 +92,84 @@ test('registerDependency: 已存在的版本不被覆盖', () => {
   fs.rmSync(f.root, { recursive: true, force: true });
 });
 
+// ── 源码解析（拆仓后：plugins/ 与 node_modules/ 两处候选）──────────────────
+
+test('resolvePluginSrcDir: 优先 plugins/，其次 node_modules/，都没有则报错', () => {
+  const f = makeFixture();
+  // 把「插件源码」直接摆进一个 node_modules 候选目录。
+  const nm = path.join(f.root, 'node_modules');
+  fs.mkdirSync(path.join(nm, PKG), { recursive: true });
+  fs.copyFileSync(path.join(f.pluginSrcDir, 'package.json'), path.join(nm, PKG, 'package.json'));
+
+  const hit = resolvePluginSrcDir({ nodeModulesDir: nm, packageName: PKG });
+  assert.strictEqual(hit, path.join(nm, PKG), '没有 plugins/ 候选时应命中 node_modules');
+
+  // plugins/ 优先于 node_modules/。
+  const pd = path.join(f.root, 'plugins');
+  fs.mkdirSync(path.join(pd, PKG), { recursive: true });
+  fs.copyFileSync(path.join(f.pluginSrcDir, 'package.json'), path.join(pd, PKG, 'package.json'));
+  assert.strictEqual(
+    resolvePluginSrcDir({ pluginsDir: pd, nodeModulesDir: nm, packageName: PKG }),
+    path.join(pd, PKG),
+    'plugins/ 里的桌面专属副本应优先',
+  );
+
+  assert.throws(() => resolvePluginSrcDir({ packageName: 'no-such-plugin' }), /未找到插件源码/);
+  fs.rmSync(f.root, { recursive: true, force: true });
+});
+
 // ── 激活 overlay ────────────────────────────────────────────────────────────
 
 test('renderActivationPatch: 每个插件一条 insert 条目', () => {
-  const f = makeFixture();
-  const pluginsDir = path.dirname(f.pluginSrcDir);
-  const text = renderActivationPatch(pluginsDir, [
-    { srcDir: path.basename(f.pluginSrcDir), entryId: 'mytest' },
-  ]);
+  const text = renderActivationPatch([{ packageName: PKG, entryId: 'mytest' }]);
   assert.match(text, /^- insert:$/m);
   assert.match(text, /- id: mytest/);
-  assert.match(text, new RegExp(`name: '${PKG.replace('/', '\\/')}'`));
-  fs.rmSync(f.root, { recursive: true, force: true });
+  assert.match(text, new RegExp(`name: '${PKG}'`));
 });
 
 test('renderActivationPatch: 空清单产出合法的空 patch 列表', () => {
   // patch 文件必须是合法 YAML 数组，空着也不能是空文件 —— 否则 dsh 解析报错。
-  assert.match(renderActivationPatch('/nowhere', []), /^\[\]$/m);
+  assert.match(renderActivationPatch([]), /^\[\]$/m);
+});
+
+test('renderActivationPatch: 被用户关掉的插件不出现在 overlay 里', () => {
+  const plugins = [
+    { packageName: 'dsh-git', entryId: 'git' },
+    { packageName: 'dsh-ui-balance', entryId: 'balance' },
+  ];
+  const text = renderActivationPatch(plugins, { git: false });
+  assert.ok(!text.includes('id: git'), '关掉的插件不该生成 insert 条目');
+  assert.ok(text.includes('id: balance'), '没动过的插件照常激活');
+});
+
+test('renderActivationPatch: 全部关掉时仍是合法 YAML（空列表）', () => {
+  // 极端情况：用户把每个插件都关了。overlay 不能变成空文件或残缺 YAML。
+  const plugins = [
+    { packageName: 'dsh-git', entryId: 'git' },
+    { packageName: 'dsh-ui-balance', entryId: 'balance' },
+  ];
+  const text = renderActivationPatch(plugins, { git: false, balance: false });
+  assert.match(text, /^\[\]$/m, '全关时输出合法空列表');
+  assert.ok(!text.includes('- insert:'), '全关时不该再有 insert 块');
+});
+
+test('renderActivationPatch: 用户状态覆盖清单默认值（enabled 缺省视为 true）', () => {
+  const plugins = [
+    { packageName: 'dsh-git', entryId: 'git' },                       // 缺省 → 默认开
+    { packageName: 'dsh-x', entryId: 'x', enabled: false },           // 清单默认关
+  ];
+  const text = renderActivationPatch(plugins, { git: false, x: true });
+  assert.ok(!text.includes('id: git'), '用户关掉覆盖缺省开启');
+  assert.ok(text.includes('id: x'), '用户打开覆盖清单默认关闭');
 });
 
 test('writeActivationPatch: 内容确定且可重复写', () => {
   const f = makeFixture();
-  const pluginsDir = path.dirname(f.pluginSrcDir);
   const out = path.join(f.root, 'nested', 'desktop.patch.yml');
-  const plugins = [{ srcDir: path.basename(f.pluginSrcDir), entryId: 'mytest' }];
-  writeActivationPatch(out, pluginsDir, plugins);
+  const plugins = [{ packageName: PKG, entryId: 'mytest' }];
+  writeActivationPatch(out, plugins);
   const first = fs.readFileSync(out, 'utf8');
-  writeActivationPatch(out, pluginsDir, plugins);
+  writeActivationPatch(out, plugins, { mytest: true });
   assert.strictEqual(fs.readFileSync(out, 'utf8'), first, '同一份内容，两个写者不能分叉');
   fs.rmSync(f.root, { recursive: true, force: true });
 });
@@ -121,7 +185,68 @@ test('loadPluginManifest: 读到仓库真实清单且字段齐全', () => {
   const plugins = loadPluginManifest(path.join(__dirname, '..', 'plugins'));
   assert.ok(plugins.length > 0);
   for (const p of plugins) {
-    assert.ok(p.srcDir, 'srcDir 必填');
+    assert.ok(p.packageName, 'packageName 必填');
     assert.ok(p.entryId, 'entryId 必填');
   }
+});
+
+test('清单里的 entryId 一律带 dsdesktop- 前缀，避免与上游 bundle 条目撞车', () => {
+  // `- insert:` 不去重：我们的 entryId 若与上游 bundle 里某条同名，cordis loader
+  // 会抛 duplicate loader entry id 让内核**秒退**（v1.1.1 同类事故）。上游的 id
+  // 大量是 `git` / `session` / `settings` 这种通用词，而内核会自己热更新到新版本
+  // —— 撞车只是时间问题，且发生在用户机器上、表现为黑屏。
+  //
+  // 前缀取 `dsdesktop-` 而非 `desktop-`：上游已有 web / tui / headless 三个
+  // surface，将来真加一个 desktop surface 时 `desktop-` 反而可能被它用掉。
+  const plugins = loadPluginManifest(path.join(__dirname, '..', 'plugins'));
+  for (const p of plugins) {
+    assert.ok(
+      p.entryId.startsWith('dsdesktop-'),
+      `entryId 必须以 dsdesktop- 开头，实际为 ${p.entryId}（见本用例注释）`,
+    );
+  }
+});
+
+test('writeSafeModePatch: 只留 safeMode 插件，且不受用户状态影响', () => {
+  const f = makeFixture();
+  const out = path.join(f.root, 'safe.patch.yml');
+  const plugins = [
+    { packageName: 'dsh-plugin-manager', entryId: 'dsdesktop-plugin-manager', safeMode: true },
+    { packageName: 'dsh-git', entryId: 'dsdesktop-git' },
+  ];
+  writeSafeModePatch(out, plugins);
+  const text = fs.readFileSync(out, 'utf8');
+  assert.match(text, /- id: dsdesktop-plugin-manager/, '恢复入口必须在');
+  assert.ok(!text.includes('dsdesktop-git'), '非 safeMode 插件不该出现');
+
+  // 关键性质：安全模式是在「用户状态可能有问题」时用的逃生舱 —— 哪怕状态文件
+  // 里把恢复入口关掉了（手改坏 / 损坏），也必须进得去。这条防的是将来有人
+  // 「顺手」把 userState 透传进来。
+  writeSafeModePatch(out, plugins.map((p) => ({ ...p, enabled: false })));
+  assert.match(fs.readFileSync(out, 'utf8'), /- id: dsdesktop-plugin-manager/,
+    '清单默认关也不能挡住安全模式');
+  fs.rmSync(f.root, { recursive: true, force: true });
+});
+
+test('清单里必须至少有一个 safeMode 插件，否则安全模式进去是个空壳', () => {
+  // 安全模式只加载 safeMode: true 的插件。一个都没有的话，用户点了「安全模式
+  // 启动」会进到一个没有任何恢复入口的界面 —— 逃生舱变成了死路。当前扛这个
+  // 角色的是插件管理面板（它自身也不可关，见 dsh-plugin-manager 的 self-locked）。
+  const plugins = loadPluginManifest(path.join(__dirname, '..', 'plugins'));
+  const recovery = plugins.filter((p) => p.safeMode === true);
+  assert.ok(recovery.length > 0, '清单里至少要有一个 safeMode: true 的插件');
+  assert.ok(
+    recovery.some((p) => p.packageName === 'dsh-plugin-manager'),
+    '插件管理面板必须留在安全模式里 —— 它是关掉出问题插件的唯一入口',
+  );
+});
+
+test('loadPluginManifest: 字段缺失当场报错，不留给内核 boot 秒退', () => {
+  const f = makeFixture();
+  const badDir = path.join(f.root, 'bad');
+  fs.mkdirSync(badDir, { recursive: true });
+  fs.writeFileSync(path.join(badDir, 'plugins.json'),
+    JSON.stringify([{ entryId: 'x' }, { packageName: 'y' }], null, 2));
+  assert.throws(() => loadPluginManifest(badDir), /packageName|entryId/);
+  fs.rmSync(f.root, { recursive: true, force: true });
 });
