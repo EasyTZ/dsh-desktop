@@ -141,9 +141,13 @@ npm test                 # 单元测试（node:test，零第三方依赖）
 npm run typecheck        # tsc --checkJs 静态检查（无编译产物）
 npm run dist             # 打包 → 产物收进 release/
 npm run dist:dir         # 只出 win-unpacked，快速验证打包态
+npm run link-plugins     # 联调插件：改同级插件仓库的代码即刻生效（可常开）
+npm run plugins-status   # 看插件当前是「钉 tag」还是「联调」
 ```
 
-`npm run dist` 会自动依次执行 install-plugin → prepare-kernel → 打包，产物落在 `release/`。
+`npm run dist` 会自动依次执行 install-plugin → prepare-kernel → 自检 → 打包，产物落在 `release/`。
+
+**插件开发**：Git 面板、终端面板、余额显示、在资源管理器中打开这四个插件是[独立仓库](https://github.com/EasyTZ?tab=repositories&q=dsh-)，本仓库按钉住的 tag 作为 git 依赖引用；`plugins/` 下只放桌面专属插件。想改插件代码，把对应仓库克隆到本仓库的同级目录，跑 `npm run link-plugins`，之后改完执行 `npm run install-plugin` 就能测，不必每次 push + 打 tag。联调可以常开——`npm run dist` 会自动临时解除、打完恢复，并在你有未提交的插件改动时中止（否则打出的包用的是钉住的旧版本，不含你的改动）。
 
 **架构**：Electron 外壳 + 自包含 dsh 内核。外壳**不渲染任何业务 UI** —— `spawn` 内核后轮询 HTTP 就绪，再让 `BrowserWindow` 加载本地回环地址；所有会话 / 文件 / 终端能力都来自 dsh 自身的 web 应用，外壳只负责窗口、标题栏、托盘、快捷键、通知与内核更新。
 
@@ -152,7 +156,7 @@ src/main/     Electron 主进程
 src/preload/  预加载脚本（注入标题栏 / 暴露 updater 接口）
 src/shared/   纯 Node 模块，主进程与构建脚本共用，也是单测落点
 scripts/      构建期 CLI（ESM）
-plugins/      自定义 dsh 插件源码 + 清单
+plugins/      桌面专属插件源码 + plugins.json 清单（通用插件在独立仓库）
 ```
 
 本项目**没有编译步骤**，`src/` 直接打进 asar —— 这是打包设计的承重墙。
