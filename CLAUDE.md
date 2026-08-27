@@ -242,6 +242,18 @@ test/         node:test 用例
 - **输入框全程可编辑，运行中也不要 `disabled` / `readOnly`**：`disabled` 的控件收不到键盘事件，会让 Ctrl+C 中断**整个失效**；`readOnly` 置灰则被用户当成「输入框失焦了」。两条都是实机反馈推翻过的写法。
 - **吸底滚动的 effect 不能挂依赖数组**：新行是就地 `push` 到 view 对象上的（SSE handler 直接改 `view.lines` 再强制重渲染），`views` / `activeView` 的引用自始至终不变，挂了依赖数组它只在挂载时跑一次，表现是「有输出但视图一直停在顶部」。同理，行的 `key` 要用稳定 id 而不是数组下标，否则每来一行整个窗口的节点全量 diff。
 
+### 改插件后要不要重启（实测钉死）
+
+内核自带两套热重载，覆盖范围**不一样**，别一概而论：
+
+| 改动 | 跑完 `install-plugin` 后 | 机制 |
+|---|---|---|
+| `lib/client.js`（UI / 样式 / 交互） | **立刻生效，不用重启** | `@deepseek-ai/dsh-client-hmr` 在 web 组合里无条件挂载：node 侧 interval `statSync` 轮询每个插件 bundle 比对 hash，变了就经 SSE（`GET /plugins/events`）推 `rebuilt` 帧，浏览器就地重挂那一个插件——**连自己注入的 `<style data-plugin>` 都会先移除再重注入**，所以改样式也不用刷新 |
+| `lib/index.js`（host 半、`/api/*` 路由） | **必须重启内核** | 实测：改了一条路由的返回值，装进全局 dsh 后**轮询 60 秒无反应**，内核日志里没有任何重载记录；重启后立刻生效。服务端那套 `@cordisjs/plugin-hmr` 追的是它自己认定的源文件图，够不到被拷进 `node_modules` 的我们这份 |
+| `plugins.json`（增删插件、改开关） | **必须重启内核** | 激活 overlay 只在启动时经 `--patch` 读一次 |
+
+这条差异直接决定联调的手感：只调样式/交互时改完就能看，动了路由就得重启。
+
 ### 客户端半怎么测
 
 客户端插件源码（`plugins/dsh-plugin-manager/lib/client.js`、拆仓后的 `node_modules/dsh-*/lib/client.js`）**不在 `npm run typecheck` 的 `include` 里**，`node --check` 又只查语法。`useCallback` / `useEffect` 的依赖数组在 render 时立即求值，引用一个后面才声明的 `const` 会触发 TDZ、组件整个渲染崩溃 —— 表现就是「面板打不开」，而这类错误只有真实执行组件函数才会暴露。`test/terminal-client-smoke.test.js` 就是这道防线：在 node 里伪造 `window` / React，真跑一遍 factory、`apply()` 与槽组件的渲染路径。新写客户端插件时照抄它（git / plugin-manager 各有同款）。

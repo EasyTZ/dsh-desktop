@@ -56,6 +56,12 @@ test/         node:test 用例
 - 客户端插件样式自己注入 `<style>`（按 `data-plugin-css` 去重），颜色一律用 dsh 的设计 token（`--dsw-alias-*`）。**token 名要核对**——它们定义在 `dsh-client-ui-theme` 的 `design-platform.css` 里（编译进客户端 bundle、运行时注入，静态 CSS 里搜不到），写错名字不会报错、只会静默走 `var()` 的兜底值，于是那处颜色永远不跟主题（`state-warning-primary` 就是错的，真名 `state-warn-primary`）。另外 `bg-layer-1/2/3` 在**浅色主题下全是白**，靠它们做「面与面的区分」在浅色下等于没做——要相对色调用 `interactive-bg-hover` / `interactive-bg-active`，要按钮面用 `button-ghost-active-fill`。
 - **打包不能用联调中的源码**：`install-plugin` 与 `pack-plugins` 都带 `dereference` 拷贝，联调下会把工作副本当前内容（含未提交改动）摊进安装包，版本号却仍是 tag 的号。`scripts/dist.mjs` 自动收尾，并在解除前核对「工作区干净 + HEAD 落在钉住的 tag 上」——否则解除后拉回旧版本，打出的包**不含你的改动**而你以为含，是同一问题的另一面。
 
+## 改插件后要不要重启（实测）
+
+- `lib/client.js`（UI / 样式）→ 跑完 `install-plugin` **立刻生效**，不用重启：`dsh-client-hmr` 轮询 bundle 变化后经 SSE 推 `rebuilt`，浏览器就地重挂该插件（连 `<style data-plugin>` 一起换）。
+- `lib/index.js`（host 半、`/api/*` 路由）→ **必须重启内核**。实测轮询 60 秒无反应、日志无重载记录，重启后才生效——服务端的 `@cordisjs/plugin-hmr` 够不到被拷进 `node_modules` 的这份。
+- `plugins.json` → **必须重启**，激活 overlay 只在启动时读一次。
+
 ## 发版
 
 改 `package.json` 的 `version` → README「更新日志」加一节 → `npm run dist`，产物按版本号精确匹配收进 `release/`。
