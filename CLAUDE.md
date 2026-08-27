@@ -80,12 +80,13 @@ npm test                 # 单元测试（node:test 内置，零第三方依赖�
 npm run typecheck        # tsc --checkJs 静态检查（noEmit，不产出编译结果）
 npm run install-plugin   # 把清单里的插件装进「本机全局 dsh」（顺带清理改名/下架的遗留）
 npm run link-plugins     # 联调：node_modules/<插件> → 同级工作副本 ../<插件>
-npm run unlink-plugins   # 解除联调，按 package.json 的 pin 恢复
+npm run unlink-plugins   # 手动解除联调（日常不需要，dist 会自己收尾）
 npm run plugins-status   # 看插件当前是「钉 tag」还是「联调」
 npm run refresh-plugins  # 改了 #tag 后强制重拉（绕开 npm 的 git 依赖缓存）
 npm run prepare-kernel   # 复制 node.exe + pnpm + 全局 dsh 依赖树到 kernel/
-npm run dist             # install-plugin → prepare-kernel → electron-builder --win → collect-release
+npm run dist             # 打包（自动临时解除联调、打完自动恢复）
 npm run dist:dir         # 同上但只出 win-unpacked（快速验证打包态）
+npm run link-plugins     # 联调：node_modules/<插件> → 同级工作副本 ../<插件>
 npm run icon             # 仅在改了 build/logo.svg 后重新生成 icon.png/ico
 ```
 
@@ -106,7 +107,11 @@ npm run icon             # 仅在改了 build/logo.svg 后重新生成 icon.png/
 
 链接**只换 `node_modules` 里那一个目录，不动 `package.json` / lockfile**——那两个文件是发版凭据，必须始终写着钉住的 tag，不能被联调改脏或误提交。Windows 上用 junction 而非 symlink：前者不需要管理员权限。
 
-`dist` / `dist:dir` 的第一步是 `verify-plugin-pins.mjs`，检测到任何插件仍是链接就**直接失败**。这不是洁癖：`install-plugin` 与 `pack-plugins` 都带 `dereference` 拷贝，联调模式下它们会把工作副本**当前的内容**（含未提交改动）摊进内核和安装包，而版本号仍写着 tag 的号——产物自称 v0.1.1、内容却不是 GitHub 上的 v0.1.1，事后既复现不了也追溯不了。检查一个符号链接就够了：不是链接就说明那份是 npm 按 lockfile 从钉住的 commit 拉的，本身可复现。
+**联调可以常开**：`dist` / `dist:dir` 走 `scripts/dist.mjs`，它自己会临时解除联调、用钉住的版本打包、结束后再恢复（`try/finally`，打包失败也恢复——否则人会在「以为还在联调」的状态下改半天不生效）。日常不需要手动 `unlink-plugins`。
+
+打包必须用钉住的版本，因为 `install-plugin` 与 `pack-plugins` 都带 `dereference` 拷贝：联调下它们会把工作副本**当前的内容**（含未提交改动）摊进内核和安装包，而版本号仍写着 tag 的号——产物自称 v0.1.1、内容却不是 GitHub 上的 v0.1.1，事后既复现不了也追溯不了。`verify-plugin-pins.mjs` 仍留在链条里当兜底（检查一个符号链接就够了：不是链接就说明那份是 npm 按 lockfile 从钉住的 commit 拉的，本身可复现）。
+
+**自动解除联调有个反向陷阱，`dist.mjs` 专门挡了**：插件工作副本若有未提交/未打 tag 的改动，解除后拉回的是钉住的旧版本，打出来的包**不含你的改动**，而你以为含——和「打出不可复现的包」是同一枚硬币的两面，产物都不是你以为的那个。所以解除前先核对：工作区干净、且 HEAD 正好落在 `package.json` 钉住的那个 tag 上，两者内容一致才放行；对不上就中止并告诉你该先去插件仓库收尾。
 
 拆仓带来的两个**主动接受的代价**（不是待修 bug）：
 
