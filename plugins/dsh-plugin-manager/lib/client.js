@@ -201,7 +201,7 @@ window.__ModuleLoader__.load({
 
 			react.useEffect(() => {
 				let alive = true;
-				getJson("/api/plugin-manager/plugins").then((result) => {
+				getJson("/api/dsdesktop/plugin-manager/plugins").then((result) => {
 					if (!alive) return;
 					if (!result || !result.ok) {
 						setView({ status: "error", message: (result && result.error && result.error.message) || "failed" });
@@ -219,7 +219,7 @@ window.__ModuleLoader__.load({
 
 			const onToggle = (plugin, next) => {
 				setView((prev) => (prev.status !== "ready" ? prev : { ...prev, busyId: plugin.entryId, error: null }));
-				postJson("/api/plugin-manager/plugins/toggle", { entryId: plugin.entryId, enabled: next }).then((result) => {
+				postJson("/api/dsdesktop/plugin-manager/plugins/toggle", { entryId: plugin.entryId, enabled: next }).then((result) => {
 					setView((prev) => {
 						if (prev.status !== "ready") return prev;
 						if (!result || !result.ok) {

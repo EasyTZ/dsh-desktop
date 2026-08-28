@@ -217,6 +217,18 @@ test/         node:test 用例
 - **`_verify` 必须带 overlay**。不带就是验了一个「没有插件的内核」，而真正启动是带着 overlay 跑的 —— 插件加载阶段的崩溃会整个溜过自检。
 - **热更新时插件装不满就不许扶正**。`_installPlugins` 里任何一个插件安装失败、或清单读不出来，都要让整次更新失败，**不能 warn 一声接着装下一个**。曾经就是那样，漏出一个很隐蔽的洞：装失败的若正好是**被用户关掉**的插件，它不在 overlay 里 → `_verify` 根本不加载它 → 自检照过 → 新内核扶正；等用户哪天把它重新打开并重启，内核 `import` 一个不存在的模块、秒退、黑屏，而事故发生在更新的好几天之后，和「更新内核」这个动作完全对不上。同理 `_activationPatch` 也不吞异常。回归测试在 `test/kernel-updater.test.js`。
 
+**三个会撞车的全局命名空间**（`test/plugin-http-baseline.test.js` + `test/plugin-install.test.js` 强制）：插件跑在**上游内核的进程里**，而内核会自己热更新。凡是「上游也往里写、撞了就抛」的全局命名空间，我们都必须主动避开 —— 撞上只是时间问题，且发生在用户机器上、表现为黑屏。已知三个，处理方式各不相同：
+
+| 命名空间 | 撞了会怎样 | 我们的做法 |
+|---|---|---|
+| cordis loader 的 `entryId` | `duplicate loader entry id`，内核秒退 | 一律 `dsdesktop-` 前缀 |
+| cordis 服务名（`ctx.provide`） | `service "x" has been registered at <...>`，boot 阶段抛、内核秒退 | **根本不占名字**：host 半一律写成文档里的函数形式（`export const inject` + `export function apply`），不是 `Service` 子类 |
+| webServer 路由路径 | `webserver: duplicate exact route "..."`，同样是抛 | 统一挤在 `/api/dsdesktop/` 前缀下，路径由文件顶部的 `ROUTE` / `ROUTE_PREFIX` 常量拼出 |
+
+第二条曾经是真实存在的雷：五个插件分别注册过 `git`、`balance`、`terminalPanel`、`reveal-explorer`、`plugin-manager`，而上游当前 70 个服务名全是 `fs` / `shell` / `web` / `storage` / `sessions` / `terminals` / `settings` 这类通用词 —— `git` 正落在词表正中间。这些插件**一个消费者都没有**（浏览器半是 fetch HTTP 路由拿数据的），占名字纯亏。对 `dsh-plugin-manager` 尤其要紧：它是安全模式下唯一被加载的插件，也就是「插件把内核搞崩」时的唯一逃生舱，逃生舱自己不能是崩溃源。
+
+第三条的两半路径是**各写一遍**的（host 注册、client fetch），所以基线测试同时校验浏览器半只请求 `/api/dsdesktop/` 下的路径 —— 改了一边忘了另一边就是「面板打开后一片 404」。
+
 **插件的 HTTP 路由安全基线**（四个插件必须一致，`test/plugin-http-baseline.test.js` 强制）：每个注册了 webServer 路由的插件都要有 `originAllowed`（Origin 存在且不等于本服务 origin → 403），有 POST 路由的还要有 `requireJson`（Content-Type 不是 application/json → 415）。两条是配套的：Origin 头在「无 preflight 的简单请求」里可以缺席，光靠 Origin 挡不住用 `text/plain` 发出来的跨源 POST。端口要在**请求时**动态取（`ctx.webServer.port`），constructor 阶段还是 `null`。
 
 这条基线一度只有终端面板有，而 `dsh-git` 恰恰是唯一有 commit / push / undo-commit 这类**会改用户仓库**的写路由的插件 —— 同一个威胁四个仓库四种待遇，纯粹因为没有任何东西会因此变红。现在那条测试就是那个「会变红的东西」，它跨仓库比对四份 `originAllowed` 的实现是否逐字一致。**不要为此抽一个公共包**：无编译、单文件、零依赖是这些插件能被别人整个抄走就用的前提，正确做法是复制 + 校验一致。
@@ -277,15 +289,41 @@ test/         node:test 用例
 {
   "main": "lib/index.js",                       // node/host 半
   "exports": { "./client": "./lib/client.js" }, // 浏览器半
-  "dsh": { "client": {
-    "platform": "web",
-    "inject": ["@deepseek-ai/dsh-client-connection", "..."]  // 浏览器半依赖的其他客户端插件
-  } },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },  // 见下：让上游用户 `dsh plugin add` 装完就能用
+    "client": {
+      "platform": "web",
+      "inject": ["@deepseek-ai/dsh-client-connection", "..."]  // 浏览器半依赖的其他客户端插件
+    }
+  },
+  "files": ["lib", "cordis.patch.yml"],
   "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1", "...": "^0.1.0-rc.7" }
 }
 ```
 
-**node 半**（`lib/index.js`）：默认导出一个 cordis `Service` 子类，`static inject = ["webServer"]` 声明依赖，构造时用 `ctx.effect(() => ..., "描述")` 注册资源（effect 的返回值是清理函数，热重载靠它）。取别的服务用 `ctx.get("credentials")` —— 可能是 `undefined`，必须判。
+**node 半**（`lib/index.js`）：写成**函数形式**的插件 —— `export const name` / `export const inject = ["webServer"]` / `export function apply(ctx, config)`，在 `apply` 里用 `ctx.effect(() => ..., "描述")` 注册资源（effect 的返回值是清理函数，热重载靠它）。取别的服务用 `ctx.get("credentials")` —— 可能是 `undefined`，必须判。
+
+**不要写成 `Service` 子类**，除非这个插件真的要向别人提供能力：`Service` 的构造函数会往 cordis 的全局服务表里注册一个名字，撞名直接抛、内核秒退（见上面的命名空间表）。cordis 的 `unwrapExports` 在没有 default 导出时回落到模块命名空间，`isApplicable` 认 `{ apply }` 形状，`runtime.callback(ctx, config)` —— 函数形式是被一等支持的，不是权宜之计。
+
+**凡是不同部署可能取不同值的参数都要进 `Config`**（上游文档的原话），用 `import z from "@deepseek-ai/schemastery"`：
+
+```js
+export const Config = z.object({ baseURL: z.string().default("https://api.deepseek.com") });
+```
+
+全字段带 default 时激活 overlay 不需要写 `config:` 键，schemastery 会填默认值（验证过）。`dsh-ui-balance` 的 `baseURL` 就是这么来的 —— 写死它意味着用户把 dsh 指向兼容代理之后，余额面板不但查错 host，还会把他填在 `DEEPSEEK_API_KEY` 里的**别家 key** 发到 api.deepseek.com。判据是「上游自己把它做成配置了吗」：`dsh-llm-deepseek` 的 `Config` 里就有 `baseURL`，设置页有对应输入框。反过来 `POLL_MS`、`MAX_LOG_LIMIT` 这类是真常量，不必进 Config。
+
+**`dependencies` 里不要写 `react`。** 浏览器半的 `require("react")` 是宿主 `__ModuleLoader__` 注入的 require，永远不经 Node 解析 —— 声明了只会让装它的人白拉一份 React。
+
+**`dsh.bundle` + 自带 `cordis.patch.yml`：给上游用户的激活方式。** 四个通用插件是公开的独立仓库（MIT、打了 `dsh-plugin` 关键词），但激活能力过去全在我们的 `renderActivationPatch` 里，没跟着插件走 —— 别人 `dsh plugin add dsh-git` 只会拿到
+
+```
+dsh: warning: dsh-git declares no dsh.bundle — installed as a plain dependency, not a profile layer
+```
+
+包装进去了、**永远不激活**，得自己手写 patch。所以每个公开插件自带一个只有一行 `- insert:` 的 `cordis.patch.yml`，并在 `package.json` 声明 `dsh.bundle.patch` 指向它。
+
+**这一层对桌面发行版是惰性的**，不会和我们的 overlay 打架：`installPlugin` 只往 dsh 的 `package.json` dependencies 里登记，从不碰 profile 的 `dsh.profile.bundles`，而 `composeProfile` 的 bundle 层只认后者。id 与 overlay 取**同一个值**（`dsdesktop-git` 等）：万一两条路径真被同时启用，失败会是响亮的 `duplicate loader entry id`（内核秒退、日志写明原因），而不是插件被静默挂载两次、路由重复注册。`dsh-plugin-manager` 是桌面专属、不发布，所以它**没有** `dsh.bundle`。
 
 **模块顶层不许有会抛的同步 IO**（`readFileSync` / `execSync` / `statSync` …）。插件是被内核 `import` 进来的，顶层抛异常 = 内核在 boot 阶段秒退 = 桌面端黑屏，而这类失败**没有自愈路径**：删用户内核回退内置也没用（内置装着同一批插件、用同一份 overlay），删 `%APPDATA%` 也没用（插件在安装目录、overlay 从清单重新生成），只能等新版本。真要在顶层读文件就 `try/catch` 后退化成常量（例：`dsh-plugin-manager` 的 `readOwnName()`），或者挪进构造函数/请求处理里——那里抛出来最多是这个插件不可用，不会带走整个内核。
 

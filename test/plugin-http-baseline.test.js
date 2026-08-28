@@ -32,8 +32,10 @@ const ROOT = path.join(__dirname, '..');
 //     的 pin。这不是误报，安装包里装的就是那份没防线的代码。
 const HINT = '（非联调态报红 = 钉住的 tag 还不含这条防线，需发新 tag 并升 pin）';
 
-/** 解析出每个插件的 host 半入口源码（联调态下 node_modules 里是指向工作副本的链接）。 */
-function hostEntries() {
+/**
+ * 解析出每个插件的两半入口源码（联调态下 node_modules 里是指向工作副本的链接）。
+ */
+function pluginEntries() {
   const plugins = loadPluginManifest(path.join(ROOT, 'plugins'));
   return plugins.map((plugin) => {
     const dir = resolvePluginSrcDir({
@@ -43,11 +45,20 @@ function hostEntries() {
     });
     const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
     const main = typeof pkg.main === 'string' ? pkg.main : 'lib/index.js';
+    const client = pkg.exports?.['./client']?.default ?? './lib/client.js';
     return {
       packageName: plugin.packageName,
+      dir,
+      pkg,
       file: path.join(dir, ...main.split('/')),
+      clientFile: path.join(dir, ...client.replace(/^\.\//, '').split('/')),
     };
   });
+}
+
+/** 只要 host 半的入口（大多数基线只看它）。 */
+function hostEntries() {
+  return pluginEntries();
 }
 
 test('每个插件的 host 半都定义了 originAllowed，并真的调用了它', () => {
@@ -91,5 +102,86 @@ test('originAllowed 的实现在四个插件之间保持一致', () => {
       other.body, first.body,
       `${other.packageName} 的 originAllowed 与 ${first.packageName} 不一致 —— 同一个威胁必须同一种处理`,
     );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 全局命名空间护栏
+// ---------------------------------------------------------------------------
+//
+// 桌面端插件跑在**上游内核的进程里**，而内核会自己热更新到新版本。凡是「上游也
+// 往里写、撞了就抛」的全局命名空间，我们都必须主动避开，否则撞车只是时间问题，
+// 且发生在用户机器上、表现为黑屏。已知有三个这样的命名空间：
+//
+//   1. cordis loader 的 entryId  —— `- insert:` 不去重，重复 id 抛
+//      `duplicate loader entry id`。由 plugin-install.test.js 的 `dsdesktop-`
+//      前缀规则守着。
+//   2. cordis 的服务名 —— `ctx.provide` 见到已注册的名字直接抛
+//      `service "x" has been registered at <...>`。上游当前 70 个服务名全是
+//      `fs` / `shell` / `web` / `storage` / `sessions` / `terminals` 这类通用词，
+//      我们曾经注册过 `git`、`balance`，正落在这个词表里。
+//   3. webServer 的路由路径 —— `register` 见到重复 (kind, path) 直接抛
+//      `webserver: duplicate exact route "..."`（上游源码注释原话：路由模式是
+//      composition 级别的契约，撞了就是配置错误）。
+//
+// 第 1 条靠前缀解决，第 2 条靠**根本不占名字**解决（这些插件不向任何人提供能力，
+// 用文档里的函数形式写即可），第 3 条靠统一前缀解决。下面三条测试分别守住 2 和 3。
+
+/** 所有桌面端插件的路由必须挤在这个我们自己说了算的前缀下。 */
+const ROUTE_PREFIX = '/api/dsdesktop/';
+
+test('host 半一律是函数形式的插件，不注册任何 cordis 服务名', () => {
+  // 服务名撞车 = boot 阶段抛异常 = 内核秒退 = 桌面端黑屏，和 duplicate loader
+  // entry id 是同一类事故。这些插件一个都没有消费者（浏览器半走 HTTP），占名
+  // 字纯亏。文档的函数形式（inject + apply）不碰服务表。
+  for (const { packageName, file } of hostEntries()) {
+    const src = fs.readFileSync(file, 'utf8');
+    assert.doesNotMatch(
+      src, /extends\s+Service/,
+      `${packageName} 的 host 半是 Service 子类 —— 会占一个 cordis 服务名，撞上上游就是内核秒退${HINT}`,
+    );
+    assert.doesNotMatch(
+      src, /super\s*\(\s*ctx\s*,/,
+      `${packageName} 的 host 半在注册 cordis 服务名${HINT}`,
+    );
+    assert.match(
+      src, /export function apply\s*\(/,
+      `${packageName} 的 host 半缺少 export function apply —— 函数形式插件的入口${HINT}`,
+    );
+    assert.match(
+      src, /export const inject\s*=/,
+      `${packageName} 的 host 半缺少 export const inject${HINT}`,
+    );
+  }
+});
+
+test('路由路径全部来自一个 /api/dsdesktop/ 常量，不散落在 register 调用里', () => {
+  for (const { packageName, file } of hostEntries()) {
+    const src = fs.readFileSync(file, 'utf8');
+    const declared = /const ROUTE(?:_PREFIX)? = "([^"]+)"/.exec(src);
+    assert.ok(declared, `${packageName} 的 host 半没有 ROUTE / ROUTE_PREFIX 常量${HINT}`);
+    assert.ok(
+      declared[1].startsWith(ROUTE_PREFIX),
+      `${packageName} 的路由常量是 ${declared[1]}，必须以 ${ROUTE_PREFIX} 开头${HINT}`,
+    );
+    // 常量存在但 register 里又写死一条字面量路径，等于常量白设。
+    assert.doesNotMatch(
+      src, /path:\s*"/,
+      `${packageName} 在 webServer.register 里写死了路径字面量，应当由路由常量拼出${HINT}`,
+    );
+  }
+});
+
+test('浏览器半只请求 /api/dsdesktop/ 下的路径', () => {
+  // 两半的路径是各写一遍的（host 注册、client fetch），改了一边忘了另一边就是
+  // 「面板打开后一片 404」。这条把漂移在测试里抓住。
+  for (const { packageName, clientFile } of pluginEntries()) {
+    const src = fs.readFileSync(clientFile, 'utf8');
+    for (const [match] of src.matchAll(/\/api\/[a-zA-Z0-9./_-]+/g)) {
+      assert.ok(
+        match.startsWith(ROUTE_PREFIX),
+        `${packageName} 的浏览器半请求了 ${match}，不在 ${ROUTE_PREFIX} 前缀下${HINT}`,
+      );
+    }
   }
 });

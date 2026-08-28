@@ -1,13 +1,21 @@
-import { Service } from "@deepseek-ai/cordis";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { nextUserState } from "./pure.js";
 
 /**
- * 插件管理面板（host 半）：两条 /api/plugin-manager/* 路由，浏览器半 fetch 它们。
- * 走 webServer 路由而非 Typert Remote，理由同其它插件：避免依赖编译生成的
- * remote descriptor（本项目无编译步骤）。
+ * 插件管理面板（host 半）：两条 /api/dsdesktop/plugin-manager/* 路由，浏览器半
+ * fetch 它们。走 webServer 路由而非 Typert Remote，理由同其它插件：避免依赖编译
+ * 生成的 remote descriptor（本项目无编译步骤）。
+ *
+ * 用**函数形式**的插件而不是 `Service` 子类：本插件不向任何人提供能力，占一个
+ * cordis 服务名只有坏处 —— `ctx.provide` 撞名是直接抛异常的，等于在 boot 阶段
+ * 杀掉内核、桌面端黑屏，和 loader 的 `duplicate loader entry id` 同一类事故。
+ * 这条对本插件尤其要紧：它是安全模式下**唯一**被加载的插件，也就是「插件把内核
+ * 搞崩」时的唯一逃生舱 —— 逃生舱自己不能是崩溃源。
+ *
+ * 路由统一挂 `/api/dsdesktop/` 前缀，同理由：webServer 的 `register` 对重复
+ * (kind, path) 也是直接抛。
  *
  * 边界要说清楚——这个插件管理的是「桌面发行版随包分发的插件」的开关，而开关
  * 的最终裁决（清单默认值被用户状态覆盖 → 生成激活 overlay）在 dsDesktop 的
@@ -249,41 +257,42 @@ async function handleToggle(req, res) {
   return sendJson(res, 200, { ok: true });
 }
 
+/** 所有桌面端插件的路由都挤在这个我们自己说了算的前缀下，见文件头注释。 */
+const ROUTE_PREFIX = "/api/dsdesktop/plugin-manager";
+
 const ROUTES = [
-  ["/api/plugin-manager/plugins", handleList],
-  ["/api/plugin-manager/plugins/toggle", handleToggle],
+  ["/plugins", handleList],
+  ["/plugins/toggle", handleToggle],
 ];
 
-class PluginManagerService extends Service {
-  static inject = ["webServer"];
-
-  constructor(ctx) {
-    super(ctx, "plugin-manager");
-    for (const [path, handler] of ROUTES) {
-      this.ctx.effect(() => this.ctx.webServer.register({
-        kind: "exact",
-        path,
-        handler: (req, res) => this.#guard(req, res, handler)
-      }), `plugin-manager: ${path}`);
-    }
+/**
+ * 所有路由的统一入口防线。放在这里而不是各个 handler 里：这套检查的价值来自
+ * 「一条都不漏」，撒进各个 handler 就会有下一个忘记加。
+ */
+function guard(ctx, req, res, handler) {
+  // port 在请求时动态取：webServer 是 [Service.init] 时才绑定端口，
+  // apply 执行时读到的还是 null。
+  const port = ctx.webServer.port;
+  if (port != null && !originAllowed(req, port)) {
+    return sendJson(res, 403, fail("forbidden-origin", "跨源请求被拒绝"));
   }
-
-  /**
-   * 所有路由的统一入口防线。放在这里而不是各个 handler 里：这套检查的价值来自
-   * 「一条都不漏」，撒进各个 handler 就会有下一个忘记加。
-   */
-  #guard(req, res, handler) {
-    // port 在请求时动态取：webServer 是 [Service.init] 时才绑定端口，
-    // constructor 阶段读到的还是 null。
-    const port = this.ctx.webServer.port;
-    if (port != null && !originAllowed(req, port)) {
-      return sendJson(res, 403, fail("forbidden-origin", "跨源请求被拒绝"));
-    }
-    if (req.method === "POST" && !requireJson(req)) {
-      return sendJson(res, 415, fail("unsupported-media-type", "Content-Type 必须是 application/json"));
-    }
-    return handler(req, res);
+  if (req.method === "POST" && !requireJson(req)) {
+    return sendJson(res, 415, fail("unsupported-media-type", "Content-Type 必须是 application/json"));
   }
+  return handler(req, res);
 }
 
-export default PluginManagerService;
+export const name = "dsh-plugin-manager";
+
+export const inject = ["webServer"];
+
+export function apply(ctx) {
+  for (const [suffix, handler] of ROUTES) {
+    const path = `${ROUTE_PREFIX}${suffix}`;
+    ctx.effect(() => ctx.webServer.register({
+      kind: "exact",
+      path,
+      handler: (req, res) => guard(ctx, req, res, handler)
+    }), `plugin-manager: ${path}`);
+  }
+}

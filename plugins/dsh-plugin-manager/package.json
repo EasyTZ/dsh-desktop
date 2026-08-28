@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-manager",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Manage desktop-bundled dsh plugins: list them and toggle activation (applies after kernel restart)",
   "type": "module",
   "main": "lib/index.js",
@@ -24,9 +24,6 @@
     }
   },
   "license": "MIT",
-  "dependencies": {
-    "react": "^18.2.0"
-  },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-host-webserver": "^0.1.1-rc.2"
