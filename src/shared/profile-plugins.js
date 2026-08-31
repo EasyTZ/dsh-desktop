@@ -233,31 +233,80 @@ function profileBundleEntryIds(profileDir, options = {}) {
     if (typeof name !== 'string') continue;
     if (!Object.prototype.hasOwnProperty.call(deps, name)) continue; // 应用本体，不碰
     if (exclude.has(name)) continue;
-    if (!PACKAGE_NAME_RE.test(name)) continue;
-    const pkgDir = path.join(profileDir, 'node_modules', ...name.split('/'));
-    let patchRel;
-    try {
-      patchRel = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'))?.dsh?.bundle?.patch;
-    } catch {
-      continue;
-    }
-    if (typeof patchRel !== 'string' || patchRel.length === 0) continue;
-    let text;
-    try {
-      text = fs.readFileSync(path.join(pkgDir, ...patchRel.replace(/^\.\//, '').split('/')), 'utf8');
-    } catch {
-      continue;
-    }
-    for (const line of text.split(/\r?\n/)) {
-      const m = PATCH_ENTRY_ID_RE.exec(line);
-      if (m) ids.push(m[1].replace(/^['"]|['"]$/g, ''));
-    }
+    ids.push(...entryIdsForPackage(profileDir, name));
   }
   return [...new Set(ids)];
 }
 
+/**
+ * 某个已装的包声明了哪些 loader entry id（读它自己的 `dsh.bundle.patch`）。
+ * 读不到任何一环都返回空数组——「读不出来」和「没有声明」在调用方看来是同一件事。
+ * @param {string} profileDir
+ * @param {string} packageName
+ * @returns {string[]}
+ */
+function entryIdsForPackage(profileDir, packageName) {
+  if (typeof packageName !== 'string' || !PACKAGE_NAME_RE.test(packageName)) return [];
+  const pkgDir = path.join(profileDir, 'node_modules', ...packageName.split('/'));
+  let patchRel;
+  try {
+    patchRel = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'))?.dsh?.bundle?.patch;
+  } catch {
+    return [];
+  }
+  if (typeof patchRel !== 'string' || patchRel.length === 0) return [];
+  let text;
+  try {
+    text = fs.readFileSync(path.join(pkgDir, ...patchRel.replace(/^\.\//, '').split('/')), 'utf8');
+  } catch {
+    return [];
+  }
+  const ids = [];
+  for (const line of text.split(/\r?\n/)) {
+    const m = PATCH_ENTRY_ID_RE.exec(line);
+    if (m) ids.push(m[1].replace(/^['"]|['"]$/g, ''));
+  }
+  return [...new Set(ids)];
+}
+
+/**
+ * 找出「我们播过种、但现在的随包清单里已经没有、而且会和现清单撞 entry id」的包。
+ *
+ * 这是给**改名 / 换包**兜底的。`- insert:` 不去重：新旧两个包声明同一个 entry id
+ * 时，cordis loader 抛 `duplicate loader entry id`，内核秒退、用户看到的是黑屏加一句
+ * 内核启动失败。而改名恰恰会造出这种局面——新名字被播种进去，旧名字还在。
+ *
+ * **判据必须是「撞 id」而不是「不在清单里」**：后者会把「我们曾经分发、后来不再分发，
+ * 但用户还在用」的插件也删掉，那是替用户做决定。撞 id 不一样——它是确定会让内核起不来
+ * 的状态，两个包不可能共存，清掉我们自己留下的那个是唯一出路。
+ *
+ * 只看播种账本里的包：用户自己装的东西不归我们管，哪怕它撞了 id 也轮不到我们删。
+ *
+ * @param {DesiredProfilePlugin[]} desired 当前随包清单
+ * @param {Record<string, string>} seeded 播种账本
+ * @param {(packageName: string) => string[]} entryIdsOf 读某个包声明的 entry id
+ * @returns {string[]} 应当移除的包名
+ */
+function planProfileCleanup(desired, seeded, entryIdsOf) {
+  const desiredNames = new Set(desired.map((entry) => entry.packageName));
+  const desiredIds = new Set();
+  for (const entry of desired) {
+    for (const id of entryIdsOf(entry.packageName)) desiredIds.add(id);
+  }
+  const remove = [];
+  for (const name of Object.keys(seeded)) {
+    if (desiredNames.has(name)) continue;
+    const ids = entryIdsOf(name);
+    if (ids.length === 0) continue;                 // 没装 / 没声明条目，撞不了
+    if (ids.some((id) => desiredIds.has(id))) remove.push(name);
+  }
+  return remove;
+}
+
 module.exports = {
   profileBundleEntryIds,
+  entryIdsForPackage,
+  planProfileCleanup,
   loadSeedState,
   saveSeedState,
   loadProfilePluginManifest,

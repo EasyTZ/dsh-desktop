@@ -24,7 +24,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {
-  loadProfilePluginIndex, planProfileReconcile, installedVersionIn, loadSeedState, saveSeedState,
+  loadProfilePluginIndex, planProfileReconcile, planProfileCleanup, entryIdsForPackage,
+  installedVersionIn, loadSeedState, saveSeedState,
 } = require('../shared/profile-plugins');
 
 /** 单个插件的安装超时。本地 tgz 不需要下载，但 pnpm 建链接、写 lockfile 也要点时间。 */
@@ -104,6 +105,26 @@ function withPnpmOnPath(env, shimDir) {
  * 自己打进发行包的，一个装不上通常意味着包本身有问题（磁盘损坏、杀软隔离），那时逐个
  * 重试也好不到哪去，而错误输出里会写明是哪个包。
  */
+/** 取输出末尾若干行，用于报错展示。 */
+function tailOf(output, lines = 10) {
+  return String(output ?? '').split('\n').slice(-lines).join('\n');
+}
+
+/** 从 profile 里移除若干个包（改名残留清理用，见 planProfileCleanup）。 */
+function runDshPluginRemove({ nodeExe, binJs, cwd, env, names }) {
+  return new Promise((resolve) => {
+    execFile(nodeExe, [binJs, 'plugin', '--profile', PROFILE_NAME, 'remove', ...names], {
+      cwd,
+      env: { ...env, CI: '1' },
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: INSTALL_TIMEOUT_MS,
+      windowsHide: true,
+    }, (error, stdout, stderr) => {
+      resolve({ ok: !error, output: `${stdout ?? ''}${stderr ?? ''}`.trim() });
+    });
+  });
+}
+
 function runDshPluginAdd({ nodeExe, binJs, cwd, env, specs }) {
   return new Promise((resolve) => {
     execFile(nodeExe, [binJs, 'plugin', '--profile', PROFILE_NAME, 'add', ...specs], {
@@ -153,7 +174,32 @@ async function reconcileProfilePlugins(options) {
   if (desired.length === 0) return result;
 
   const dir = profileDir(env);
-  const seeded = loadSeedState(seedStatePath);
+  let seeded = loadSeedState(seedStatePath);
+
+  // 先清残留，再装新的。顺序不能反：改名的场景下新旧两个包声明同一个 entry id，
+  // 先装会让 profile 短暂处于「两个都在」的状态——这中间要是被打断（断电、杀进程），
+  // 下次启动就是 duplicate loader entry id + 黑屏。
+  const spawnEnv0 = withPnpmOnPath(env, result.shimDir);
+  const stale = planProfileCleanup(desired, seeded, (name) => entryIdsForPackage(dir, name));
+  if (stale.length > 0) {
+    logger.log(`[profile-plugins] 清理会撞 entry id 的历史残留：${stale.join(', ')}`);
+    const removed = await runDshPluginRemove({
+      nodeExe, binJs, cwd: path.dirname(binJs), env: spawnEnv0, names: stale,
+    });
+    if (removed.ok) {
+      seeded = { ...seeded };
+      for (const name of stale) delete seeded[name];
+      try {
+        saveSeedState(seedStatePath, seeded);
+      } catch { /* 账本写不下不影响这次清理的效果 */ }
+    } else {
+      // 清不掉就别再装新的：装了就是两个撞 id 的包共存，内核起不来。宁可这一次
+      // 少几个插件，也不要一个打不开的应用。
+      logger.warn(`[profile-plugins] 残留清理失败，本次跳过安装以免撞 entry id：\n${tailOf(removed.output)}`);
+      return result;
+    }
+  }
+
   const plan = planProfileReconcile(desired, (name) => installedVersionIn(dir, name), seeded);
   if (plan.length === 0) {
     logger.log(`[profile-plugins] 无需处理（随包 ${desired.length} 个，已播种 ${Object.keys(seeded).length} 个）`);
@@ -174,9 +220,8 @@ async function reconcileProfilePlugins(options) {
   }
   if (specs.length === 0) return result;
 
-  const spawnEnv = withPnpmOnPath(env, result.shimDir);
   const run = await runDshPluginAdd({
-    nodeExe, binJs, cwd: path.dirname(binJs), env: spawnEnv, specs: specs.map((s) => s.tarball),
+    nodeExe, binJs, cwd: path.dirname(binJs), env: spawnEnv0, specs: specs.map((s) => s.tarball),
   });
   if (run.ok) {
     // **装成功之后才记账**。失败也记的话，那个插件就再也不会被尝试，用户看到的是

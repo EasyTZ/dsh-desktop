@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {
   loadProfilePluginManifest, loadProfilePluginIndex, planProfileReconcile, installedVersionIn,
-  profileBundleEntryIds, loadSeedState, saveSeedState,
+  profileBundleEntryIds, loadSeedState, saveSeedState, planProfileCleanup, entryIdsForPackage,
 } = require('../src/shared/profile-plugins');
 
 // profile 层（A1）插件的清单与对账。
@@ -237,4 +237,49 @@ test('真实清单：五个插件都在 A1，且只有插件市场是 required',
   ]);
   const required = plugins.filter((p) => p.required === true).map((p) => p.packageName);
   assert.deepStrictEqual(required, ['@easytz/dsh-market'], '只有插件市场可以是 required');
+});
+
+test('planProfileCleanup: 改名后旧包会撞 entry id，必须清掉', () => {
+  // 这条是真事故的回归：改名之后 profile 里同时存在 dsh-git 与 @easytz/dsh-git，
+  // 两个包声明同一个 entryId，`- insert:` 不去重 → cordis 抛 duplicate loader
+  // entry id → 内核秒退、用户看到「内核启动失败」。
+  const ids = {
+    'dsh-git': ['dsdesktop-git'],
+    '@easytz/dsh-git': ['dsdesktop-git'],
+  };
+  const desired = [{ packageName: '@easytz/dsh-git', version: '0.5.0', tarball: 't.tgz' }];
+  const seeded = { 'dsh-git': '0.4.0', '@easytz/dsh-git': '0.5.0' };
+  assert.deepStrictEqual(planProfileCleanup(desired, seeded, (n) => ids[n] ?? []), ['dsh-git']);
+});
+
+test('planProfileCleanup: 我们不再分发、但不撞 id 的包不许动', () => {
+  // 判据是「撞 id」而不是「不在清单里」。后者会把「曾经随包分发、后来不再分发，
+  // 但用户还在用」的插件也删掉 —— 那是替用户做决定。撞 id 不一样：两个包不可能
+  // 共存，清掉我们自己留下的那个是唯一出路。
+  const ids = { 'dropped-plugin': ['some-other-id'], '@easytz/dsh-git': ['dsdesktop-git'] };
+  const desired = [{ packageName: '@easytz/dsh-git', version: '0.5.0', tarball: 't.tgz' }];
+  assert.deepStrictEqual(
+    planProfileCleanup(desired, { 'dropped-plugin': '1.0.0' }, (n) => ids[n] ?? []), [],
+  );
+});
+
+test('planProfileCleanup: 用户自己装的包不归我们管，撞了也不删', () => {
+  // 只看播种账本。账本里没有 = 不是我们放进去的 = 轮不到我们删。
+  const ids = { 'user-installed': ['dsdesktop-git'], '@easytz/dsh-git': ['dsdesktop-git'] };
+  const desired = [{ packageName: '@easytz/dsh-git', version: '0.5.0', tarball: 't.tgz' }];
+  assert.deepStrictEqual(planProfileCleanup(desired, {}, (n) => ids[n] ?? []), []);
+});
+
+test('planProfileCleanup: 已经卸掉的残留（读不到 entry id）不用管', () => {
+  const desired = [{ packageName: '@easytz/dsh-git', version: '0.5.0', tarball: 't.tgz' }];
+  assert.deepStrictEqual(planProfileCleanup(desired, { 'gone': '1.0.0' }, () => []), []);
+});
+
+test('entryIdsForPackage: 读某个已装包声明的 entry id', () => {
+  const dir = tmpdir();
+  write(path.join(dir, 'node_modules', 'p', 'package.json'), { dsh: { bundle: { patch: './c.yml' } } });
+  write(path.join(dir, 'node_modules', 'p', 'c.yml'), "- insert:\n    - id: e1\n      name: 'p'\n    - id: e2\n");
+  assert.deepStrictEqual(entryIdsForPackage(dir, 'p'), ['e1', 'e2']);
+  assert.deepStrictEqual(entryIdsForPackage(dir, 'missing'), []);
+  assert.deepStrictEqual(entryIdsForPackage(dir, '../evil'), [], '非法包名不许拼进路径');
 });
