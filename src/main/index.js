@@ -11,10 +11,12 @@ const { TaskNotifications } = require('./notifications');
 const { KernelUpdater } = require('./kernel-updater');
 const { summarizeStderr } = require('../shared/error-detail');
 const { needsUnpack, unpackKernel } = require('../shared/kernel-unpack');
+const { kernelPaths } = require('../shared/kernel-paths');
 const { showUpdaterWindow, hideUpdaterWindow, destroyUpdaterWindow } = require('./updater-window');
+const { reconcileProfilePlugins } = require('./profile-plugins-installer');
 
 const APP_ID = 'com.deepseek.desktop';
-const ISSUES_URL = 'https://github.com/EasyTZ/Deepseek-Harness-Desktop/issues/new/choose';
+const ISSUES_URL = 'https://github.com/EasyTZ/dsh-desktop/issues/new/choose';
 const gotLock = app.requestSingleInstanceLock();
 
 if (!gotLock) {
@@ -64,6 +66,23 @@ if (!gotLock) {
   process.env.DSH_DESKTOP_ACTIVATION_PATCH = ACTIVATION_PATCH_PATH;
 
   const PNPM_CLI_PATH = path.join(BUILTIN_KERNEL_DIR, 'pnpm', 'bin', 'pnpm.cjs');
+  // pnpm 的 PATH 垫片：让内核进程里的 `dsh plugin add`（市场的一键安装、以及启动
+  // 对账）能找到随包分发的 pnpm，而不要求用户机器上装过。见 profile-plugins-installer。
+  const PNPM_SHIM_DIR = path.join(app.getPath('userData'), 'pnpm-shim');
+  // 播种账本：记「随应用分发的插件，我们给这个用户播过哪些种」。
+  // 它是「用户卸载了就别再装回来」这条语义的**唯一**依据——没有它就分不清
+  // 「从没装过」和「装过但被卸了」，两种情况下 profile 里都是查无此包。
+  const PROFILE_SEED_STATE_PATH = path.join(app.getPath('userData'), 'profile-plugins-seeded.json');
+  // profile 层插件的产物（tgz + index.json）。打包态跟着 plugins 资源走；开发态在
+  // 仓库的 plugins-dist/ 下 —— 那是 `npm run pack-profile-plugins` 的输出，没跑过就
+  // 没有这个目录，对账会安静跳过，正是开发时想要的行为。
+  const PROFILE_DIST_DIR = app.isPackaged
+    ? path.join(PLUGINS_DIR, 'profile')
+    : path.join(__dirname, '..', '..', 'plugins-dist', 'profile');
+  // 插件市场要能列出「随应用分发的插件」并把被卸载的那些装回来 —— 装回来用的是这个
+  // 目录里的 tgz，所以位置得告诉它。不注入的话，用户卸掉一个自带插件就再也装不回来了
+  // （npm 上还没发，市场里搜不到），那是一扇单向门。
+  process.env.DSH_DESKTOP_PROFILE_DIST = PROFILE_DIST_DIR;
   const PNPM_STORE_DIR = path.join(app.getPath('userData'), 'pnpm-store');
   const BUILTIN_NODE_EXE = path.join(BUILTIN_KERNEL_DIR, 'node.exe');
 
@@ -352,7 +371,31 @@ if (!gotLock) {
       reportKernelCrash({ code, signal, detail });
     });
 
-    service.start().catch((err) => console.error('[app] 启动失败:', err));
+    // profile 层插件（插件市场）先对账再起内核：内核在 boot 时就会读 profile 的
+    // bundles 层，装晚了这一次启动就看不到面板。对账失败**不阻塞启动**——最坏是
+    // 市场这一次不可用，而不是应用打不开，所以这里 catch 掉一切继续往下走。
+    //
+    // 常态开销为零：版本一致时只读两个 package.json 就返回，不 spawn 任何进程。
+    reconcileProfilePlugins({
+      profileDistDir: PROFILE_DIST_DIR,
+      nodeExe: BUILTIN_NODE_EXE,
+      // 用**内置**内核的 dsh 入口，而不是当前生效的那个（可能是热更新出来的用户内核）：
+      // `plugin` 子命令只在 profile 目录里跑 pnpm 并 reconcile bundles，不依赖内核版本；
+      // 而内置内核一定在，用户内核可能正处在更新的中间状态。
+      binJs: kernelPaths(BUILTIN_KERNEL_DIR).binJs,
+      pnpmCliPath: PNPM_CLI_PATH,
+      shimDir: PNPM_SHIM_DIR,
+      seedStatePath: PROFILE_SEED_STATE_PATH,
+      logger: console,
+    }).catch((err) => {
+      console.warn('[app] profile 插件对账失败（不影响启动）:', err);
+      return { shimDir: null };
+    }).then((result) => {
+      // 垫片目录进内核进程的 PATH：市场面板里的一键安装走的也是 `dsh plugin add`，
+      // 它内部 spawn 裸 `pnpm`，用户机器上不一定装了。
+      if (result && result.shimDir) service.pnpmShimDir = result.shimDir;
+      return service.start();
+    }).catch((err) => console.error('[app] 启动失败:', err));
   };
 
   const onCloseRequest = (event) => {

@@ -25,6 +25,11 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const nodeModules = join(root, 'node_modules');
 const workspace = resolve(root, '..');
 
+/** 包名 → 同级工作副本的目录名。`@scope/x` 的仓库目录是 `x`。 */
+function repoDirOf(packageName) {
+  return packageName.startsWith('@') ? packageName.split('/')[1] : packageName;
+}
+
 const mode = process.argv.includes('--off') ? 'off'
   : process.argv.includes('--status') ? 'status'
     : 'on';
@@ -46,7 +51,7 @@ function stateOf(name) {
 function report() {
   for (const name of vendoredPlugins()) {
     const state = stateOf(name);
-    const label = { linked: '联调（→ ../' + name + '）', pinned: '钉 tag', missing: '缺失' }[state];
+    const label = { linked: '联调（→ ../' + repoDirOf(name) + '）', pinned: '钉 tag', missing: '缺失' }[state];
     console.log(`  ${name.padEnd(22)} ${label}`);
   }
 }
@@ -73,7 +78,9 @@ if (mode === 'status') {
 if (mode === 'on') {
   let failed = false;
   for (const name of vendoredPlugins()) {
-    const target = join(workspace, name);
+    // 同级目录名是**仓库名**，不带 scope：包叫 `@easytz/dsh-git`，仓库目录叫
+    // `dsh-git`。scope 是 npm 上的命名空间，跟磁盘布局没关系。
+    const target = join(workspace, repoDirOf(name));
     // 先确认同级真的有这个仓库、且包名对得上，再动 node_modules —— 链到一个
     // 不存在或不对的目录，表现是内核 import 失败秒退，排查成本远高于这里失败。
     const manifest = join(target, 'package.json');

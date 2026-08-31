@@ -11,8 +11,42 @@ const { findDshBinJsAsync } = require('../shared/dsh-locate');
 const { loadPluginManifest, writeActivationPatch, writeSafeModePatch } = require('../shared/plugin-install');
 const { loadPluginState } = require('../shared/plugin-state');
 const { isPortBindFailure, firstBindErrorLine } = require('../shared/error-detail');
+const { profileBundleEntryIds } = require('../shared/profile-plugins');
+const { withPnpmOnPath, profileDir } = require('./profile-plugins-installer');
 
 const URL_LINE_RE = /dsh web:\s+(https?:\/\/\S+)/;
+
+/**
+ * 安全模式下**不**关掉的 profile 层插件。
+ *
+ * 目前只有插件市场：dsh-plugin-manager 的 UI 并进它之后，它是唯一能关插件的界面。
+ * 安全模式的意义是「把出问题的插件关掉」，把那个能关插件的东西也关了就等于没有安全模式。
+ */
+const RECOVERY_PACKAGES = ['@easytz/dsh-market'];
+
+/**
+ * 用户在插件市场里「停用」的 profile 层插件 → 要写进 overlay 的 disable 条目。
+ *
+ * 「停用」和「卸载」是两件事，用户两个都要：停用保留安装、随时能开回来（适合暂时
+ * 排查问题），卸载是真的删掉。profile 层插件自己插自己的第 2 层条目，我们插不了也
+ * 删不掉，只能从第 4 层压一条 `disabled: true`。
+ *
+ * 状态存在 `plugin-state.json`（entryId → boolean，`false` = 停用），和 A2 插件的
+ * 开关**共用同一个文件与同一种形状**：那本来就是同一个概念——用户对某个 loader 条目
+ * 的开关意愿，只是两层的实现手段不同。
+ *
+ * **只对 profile 里真实存在的 entry id 生成 disable**：dsh 自己给遥测生成 disable
+ * 补丁时也先查了 `hasRow`，说明 patch 一个不存在的 id 不是安全操作。用户卸载了一个
+ * 曾经停用过的插件后，状态文件里那条 `false` 就是「不存在的 id」——不过滤会在下次
+ * 启动时炸在所有人脸上。
+ */
+function disabledProfileEntryIds(userState) {
+  const wanted = new Set(
+    Object.entries(userState ?? {}).filter(([, on]) => on === false).map(([id]) => id),
+  );
+  if (wanted.size === 0) return [];
+  return profileBundleEntryIds(profileDir()).filter((id) => wanted.has(id));
+}
 
 // 端口绑定失败的换端口重试上限。三次都撞上说明不是运气问题（多半是安全软件拦截
 // 或系统保留了很大一段端口），继续试没有意义，交给上层报错。
@@ -45,6 +79,9 @@ class DshService extends EventEmitter {
     // 安全模式：只加载清单里标了 safeMode 的插件（逃生舱，见 #prepareActivationPatch）。
     // 会话级，不落盘 —— 重启应用即回到正常模式，不会让用户卡在安全模式里出不来。
     this.safeMode = opts.safeMode === true;
+    // pnpm 垫片目录。由启动时的 profile 插件对账造出来后写进来（见 index.js），
+    // 拿不到就是 null —— 那种情况下内核里的 `dsh plugin add` 退回碰运气用系统 pnpm。
+    this.pnpmShimDir = opts.pnpmShimDir ?? null;
     this.child = null;
     this.url = null;
     this.stopped = false;
@@ -118,6 +155,10 @@ class DshService extends EventEmitter {
   /**
    * 起一次内核进程（定端口 → spawn → 挂事件 → 轮询就绪）。
    *
+   * PATH 里会插一个 pnpm 垫片（`pnpmShimDir`，由启动时的 profile 插件对账造出来）：
+   * 插件市场的「一键安装」跑的是内核进程里的 `dsh plugin add`，而它内部 spawn 的是
+   * 裸 `pnpm`——用户机器上不一定装过。桌面版承诺「无需额外环境」，这条就得由我们补上。
+   *
    * **端口交给内核自己申请（`--port 0`）。** 老做法是父进程探一个空闲端口、把号码
    * 交给子进程去 bind，这中间有固有的时间差：探测成功不代表几秒后内核 bind 时还能
    * 绑上。用户实测报过 `listen EACCES 127.0.0.1:53389` —— Windows 上 loopback bind
@@ -165,12 +206,12 @@ class DshService extends EventEmitter {
       // 避免后续清理进程时误杀正在开发它的 agent 自己。
       // DSH_DESKTOP_SAFE_MODE 让插件管理面板知道自己正跑在安全模式下，好在 UI 上
       // 说明「插件不是丢了，是被这次启动刻意跳过了」。
-      env: {
+      env: withPnpmOnPath({
         ...process.env,
         DSH_DESKTOP: '1',
         DSH_DESKTOP_PARENT_PID: String(process.pid),
         ...(this.safeMode ? { DSH_DESKTOP_SAFE_MODE: '1' } : {}),
-      },
+      }, this.pnpmShimDir),
     });
 
     this.child.stdout.on('data', (d) => this.#scanStdout(d));
@@ -241,10 +282,20 @@ class DshService extends EventEmitter {
     try {
       const plugins = loadPluginManifest(this.pluginsDir);
       if (this.safeMode) {
-        return writeSafeModePatch(this.activationPatchPath, plugins);
+        // profile 层（A1）插件也要一并关掉，否则安全模式只挡得住随包分发的那批，
+        // 而用户从市场装的插件——恰恰是最可能出问题、也最需要被关掉的那些——照样
+        // 加载。**唯独放过插件市场自己**：它是并入 UI 之后唯一的恢复入口，把它关了
+        // 安全模式就变成一个没有任何按钮可点的界面。
+        const disable = profileBundleEntryIds(profileDir(), { exclude: RECOVERY_PACKAGES });
+        if (disable.length > 0) {
+          this.logger.log(`[dsh] 安全模式：额外关闭 profile 层插件 ${disable.join(', ')}`);
+        }
+        return writeSafeModePatch(this.activationPatchPath, plugins, disable);
       }
       const userState = loadPluginState(this.pluginStatePath);
-      return writeActivationPatch(this.activationPatchPath, plugins, userState);
+      return writeActivationPatch(
+        this.activationPatchPath, plugins, userState, disabledProfileEntryIds(userState),
+      );
     } catch (error) {
       this.logger.warn('[dsh] 生成插件激活 overlay 失败，插件将不生效:', error?.message ?? error);
       return null;

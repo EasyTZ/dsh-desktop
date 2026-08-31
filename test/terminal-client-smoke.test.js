@@ -1,7 +1,7 @@
 'use strict';
 
 // 客户端插件冒烟测试：在 node 里伪造浏览器全局与 React，真实执行
-// node_modules/dsh-terminal-panel/lib/client.js（插件已拆仓，git 依赖 vendor）
+// node_modules/@easytz/dsh-terminal-panel/lib/client.js（插件已拆仓，git 依赖 vendor）
 // 的 factory、apply() 和组件渲染路径。
 //
 // 为什么需要它：client.js 不在 typecheck 的 include 里，node --check 只查语法，
@@ -14,7 +14,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const CLIENT = path.join(__dirname, '..', 'node_modules', 'dsh-terminal-panel', 'lib', 'client.js');
+const CLIENT = path.join(__dirname, '..', 'node_modules', '@easytz', 'dsh-terminal-panel', 'lib', 'client.js');
 
 test('client.js 冒烟：factory/apply/组件渲染全路径不崩', () => {
   const src = fs.readFileSync(CLIENT, 'utf8');

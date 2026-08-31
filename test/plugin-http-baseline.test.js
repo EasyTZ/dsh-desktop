@@ -45,13 +45,17 @@ function pluginEntries() {
     });
     const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
     const main = typeof pkg.main === 'string' ? pkg.main : 'lib/index.js';
-    const client = pkg.exports?.['./client']?.default ?? './lib/client.js';
+    // 插件可以**只有 host 半**：dsh-plugin-manager 的面板并进插件市场之后，它就只剩
+    // 路由、不再有浏览器半。没有 `./client` 导出时 clientFile 给 null，由调用方跳过，
+    // 而不是退回一个猜出来的路径去读——那样读不到会抛，把「这插件没有 UI」这个正常
+    // 情况报成测试失败。
+    const client = pkg.exports?.['./client']?.default ?? null;
     return {
       packageName: plugin.packageName,
       dir,
       pkg,
       file: path.join(dir, ...main.split('/')),
-      clientFile: path.join(dir, ...client.replace(/^\.\//, '').split('/')),
+      clientFile: client === null ? null : path.join(dir, ...client.replace(/^\.\//, '').split('/')),
     };
   });
 }
@@ -176,6 +180,7 @@ test('浏览器半只请求 /api/dsdesktop/ 下的路径', () => {
   // 两半的路径是各写一遍的（host 注册、client fetch），改了一边忘了另一边就是
   // 「面板打开后一片 404」。这条把漂移在测试里抓住。
   for (const { packageName, clientFile } of pluginEntries()) {
+    if (clientFile === null) continue; // 只有 host 半的插件没有可查的 fetch 路径
     const src = fs.readFileSync(clientFile, 'utf8');
     for (const [match] of src.matchAll(/\/api\/[a-zA-Z0-9./_-]+/g)) {
       assert.ok(

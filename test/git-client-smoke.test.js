@@ -13,7 +13,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const CLIENT = path.join(__dirname, '..', 'node_modules', 'dsh-git', 'lib', 'client.js');
+const CLIENT = path.join(__dirname, '..', 'node_modules', '@easytz', 'dsh-git', 'lib', 'client.js');
 
 /** 把伪造的 React 元素树拍平成数组，便于查找。 */
 function flatten(node, out = []) {
@@ -62,9 +62,15 @@ function loadModule() {
     useRef: (init) => ({ current: init }),
     useSyncExternalStore: (_sub, get) => get(),
   };
+  // createPortal 在这个假 DOM 里没有意义（也没有真容器），直接把节点原样返回——
+  // 测试关心的是「面板这棵树渲染得出来」，而不是它最终挂在哪个 DOM 容器下。
+  // 插件之所以要 portal，是为了让遮罩的 z-index 能压过桌面端那个 z-index:900 的
+  // 自绘标题栏（shell.overlay 那层封顶只有 20），那是真实浏览器里的层叠问题。
+  const reactDom = { createPortal: (node) => node };
   const fakeRequire = (id) => {
     if (id === 'react/jsx-runtime') return reactJsx;
     if (id === 'react') return reactHooks;
+    if (id === 'react-dom') return reactDom;
     throw new Error('unexpected require: ' + id);
   };
   // eslint-disable-next-line no-eval

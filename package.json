@@ -25,13 +25,15 @@
     "dist:dir": "node scripts/dist.mjs --dir",
     "verify-kernel": "node scripts/verify-kernel.mjs",
     "pack-kernel": "node scripts/pack-kernel.mjs",
-    "pack-plugins": "node scripts/pack-plugins.mjs"
+    "pack-plugins": "node scripts/pack-plugins.mjs",
+    "pack-profile-plugins": "node scripts/pack-profile-plugins.mjs"
   },
   "dependencies": {
-    "dsh-git": "github:EasyTZ/dsh-git#v0.3.1",
-    "dsh-reveal-explorer": "github:EasyTZ/dsh-reveal-explorer#v0.1.3",
-    "dsh-terminal-panel": "github:EasyTZ/dsh-terminal-panel#v0.1.3",
-    "dsh-ui-balance": "github:EasyTZ/dsh-ui-balance#v0.1.3"
+    "@easytz/dsh-git": "github:EasyTZ/dsh-git#v0.5.0",
+    "@easytz/dsh-market": "github:EasyTZ/dsh-market#v0.1.0",
+    "@easytz/dsh-reveal-explorer": "github:EasyTZ/dsh-reveal-explorer#v0.2.0",
+    "@easytz/dsh-terminal-panel": "github:EasyTZ/dsh-terminal-panel#v0.2.0",
+    "@easytz/dsh-ui-balance": "github:EasyTZ/dsh-ui-balance#v0.2.0"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

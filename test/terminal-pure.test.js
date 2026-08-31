@@ -11,7 +11,7 @@ const { before } = require('node:test');
 let pure;
 before(async () => {
   // 终端插件已拆仓（git 依赖 vendor 进 node_modules），路径跟着迁移。
-  pure = await import('../node_modules/dsh-terminal-panel/lib/pure.js');
+  pure = await import('../node_modules/@easytz/dsh-terminal-panel/lib/pure.js');
 });
 
 const text = (line) => (line.segments.length ? line.segments.map((s) => s.t).join('') : '');

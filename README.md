@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/EasyTZ/Deepseek-Harness-Desktop/releases/latest"><b>⬇️ 下载最新版</b></a>
+  <a href="https://github.com/EasyTZ/dsh-desktop/releases/latest"><b>⬇️ 下载最新版</b></a>
 </p>
 
 ---
@@ -32,7 +32,7 @@
 
 ## 📥 下载与安装
 
-到 [Releases 页面](https://github.com/EasyTZ/Deepseek-Harness-Desktop/releases)下载**任选一个**：
+到 [Releases 页面](https://github.com/EasyTZ/dsh-desktop/releases)下载**任选一个**：
 
 | 文件 | 选它的理由 |
 |---|---|
@@ -90,7 +90,7 @@
 
 用着有问题、有想要的功能，欢迎随时提 —— 这个项目就是靠反馈改进的。
 
-- **报 bug / 提需求**：[提交 Issue](https://github.com/EasyTZ/Deepseek-Harness-Desktop/issues)，客户端托盘菜单里的「反馈问题」可直接跳转。
+- **报 bug / 提需求**：[提交 Issue](https://github.com/EasyTZ/dsh-desktop/issues)，客户端托盘菜单里的「反馈问题」可直接跳转。
 - **QQ 群**：群号 `263261649`
 
   <img src="docs/qq-group.jpg" alt="QQ 交流群二维码" width="200">

@@ -227,8 +227,15 @@ test('readPluginPackage: 缺 name 字段要报错', () => {
 });
 
 test('loadPluginManifest: 读到仓库真实清单且字段齐全', () => {
+  // A2 清单**现在是空的**，这不是漏写：五个插件全部迁到了 profile 层（A1，见
+  // plugins/profile-plugins.json）。用户要能像管理市场里其它插件一样自主装卸它们，
+  // 而 A2 的语义是「随内核走、用户卸不掉」，两者不相容。
+  //
+  // 空清单是合法状态，整条 A2 链路（拷进内核 + 生成 overlay insert）对它是空转。
+  // 保留这条测试是因为**清单随时可能再有条目**（比如将来出现一个真正不该被卸载、
+  // 又不适合放 profile 的插件），那时字段校验必须还在。
   const plugins = loadPluginManifest(path.join(__dirname, '..', 'plugins'));
-  assert.ok(plugins.length > 0);
+  assert.ok(Array.isArray(plugins), '清单必须是数组');
   for (const p of plugins) {
     assert.ok(p.packageName, 'packageName 必填');
     assert.ok(p.entryId, 'entryId 必填');
@@ -387,35 +394,48 @@ test('cleanupLegacyPlugins: 登记已摘、目录还在的孤儿也要清掉', (
 test('writeSafeModePatch: 只留 safeMode 插件，且不受用户状态影响', () => {
   const f = makeFixture();
   const out = path.join(f.root, 'safe.patch.yml');
+  // 清单当前没有 safeMode 插件（恢复入口已换到 A1 层的插件市场），但这条测试
+  // 守的是**机制**：标了 safeMode 的插件必须进 overlay、没标的必须不进。用构造
+  // 数据而不是真实清单，机制才不会随清单内容变动而失去覆盖。
   const plugins = [
-    { packageName: 'dsh-plugin-manager', entryId: 'dsdesktop-plugin-manager', safeMode: true },
+    { packageName: 'dsh-recovery-example', entryId: 'dsdesktop-recovery-example', safeMode: true },
     { packageName: 'dsh-git', entryId: 'dsdesktop-git' },
   ];
   writeSafeModePatch(out, plugins);
   const text = fs.readFileSync(out, 'utf8');
-  assert.match(text, /- id: dsdesktop-plugin-manager/, '恢复入口必须在');
+  assert.match(text, /- id: dsdesktop-recovery-example/, '标了 safeMode 的必须在');
   assert.ok(!text.includes('dsdesktop-git'), '非 safeMode 插件不该出现');
 
   // 关键性质：安全模式是在「用户状态可能有问题」时用的逃生舱 —— 哪怕状态文件
   // 里把恢复入口关掉了（手改坏 / 损坏），也必须进得去。这条防的是将来有人
   // 「顺手」把 userState 透传进来。
   writeSafeModePatch(out, plugins.map((p) => ({ ...p, enabled: false })));
-  assert.match(fs.readFileSync(out, 'utf8'), /- id: dsdesktop-plugin-manager/,
+  assert.match(fs.readFileSync(out, 'utf8'), /- id: dsdesktop-recovery-example/,
     '清单默认关也不能挡住安全模式');
   fs.rmSync(f.root, { recursive: true, force: true });
 });
 
-test('清单里必须至少有一个 safeMode 插件，否则安全模式进去是个空壳', () => {
-  // 安全模式只加载 safeMode: true 的插件。一个都没有的话，用户点了「安全模式
-  // 启动」会进到一个没有任何恢复入口的界面 —— 逃生舱变成了死路。当前扛这个
-  // 角色的是插件管理面板（它自身也不可关，见 dsh-plugin-manager 的 self-locked）。
-  const plugins = loadPluginManifest(path.join(__dirname, '..', 'plugins'));
-  const recovery = plugins.filter((p) => p.safeMode === true);
-  assert.ok(recovery.length > 0, '清单里至少要有一个 safeMode: true 的插件');
-  assert.ok(
-    recovery.some((p) => p.packageName === 'dsh-plugin-manager'),
-    '插件管理面板必须留在安全模式里 —— 它是关掉出问题插件的唯一入口',
-  );
+test('安全模式没有 safeMode 插件时，overlay 仍然是合法的空 YAML 列表', () => {
+  // 这条替代了原来的「清单里必须至少有一个 safeMode 插件」。
+  //
+  // 恢复入口**换层了**：插件管理面板原本是 A2 层的 dsh-plugin-manager（清单里唯一
+  // 标 safeMode 的那个），它并进插件市场之后，市场住在 profile 层（A1）。而安全模式
+  // 的 overlay 只生成 A2 插件的 `- insert:`、不 disable 别的层，所以 A1 的市场在安全
+  // 模式下照样加载 —— 恢复入口仍然在，只是不再由这份清单提供。
+  //
+  // 于是「至少留一个 safeMode 插件」不再是必要条件，**但 overlay 必须仍然合法**：
+  // 空清单要输出 `[]` 而不是空文件，否则 dsh 解析 patch 直接报错——那正好发生在
+  // 用户最需要安全模式的时候。
+  const f = makeFixture();
+  const out = path.join(f.root, 'safe-empty.patch.yml');
+  writeSafeModePatch(out, [
+    { packageName: 'dsh-git', entryId: 'dsdesktop-git' },
+    { packageName: 'dsh-ui-balance', entryId: 'dsdesktop-balance' },
+  ]);
+  const text = fs.readFileSync(out, 'utf8');
+  assert.ok(!text.includes('- insert:'), '没有 safeMode 插件时不该有 insert 段');
+  assert.match(text, /^\[\]$/m, '必须输出合法的空 YAML 列表 []');
+  fs.rmSync(f.root, { recursive: true, force: true });
 });
 
 test('loadPluginManifest: 字段缺失当场报错，不留给内核 boot 秒退', () => {
@@ -426,4 +446,29 @@ test('loadPluginManifest: 字段缺失当场报错，不留给内核 boot 秒退
     JSON.stringify([{ entryId: 'x' }, { packageName: 'y' }], null, 2));
   assert.throws(() => loadPluginManifest(badDir), /packageName|entryId/);
   fs.rmSync(f.root, { recursive: true, force: true });
+});
+
+test('renderPatchFor: profile 层的停用会生成 disabled 条目', () => {
+  // A2 插件的「关掉」= 不生成它的 insert（我们是插入方，不插就是关）；profile 层
+  // 插件自己插自己，我们只能从第 4 层压一条 disabled。同一个「停用」两种写法，
+  // 是分层带来的，不是设计冗余。
+  const text = renderActivationPatch([], {}, ['dsdesktop-git', 'cost-meter']);
+  assert.match(text, /- id: dsdesktop-git\n {2}disabled: true/);
+  assert.match(text, /- id: cost-meter\n {2}disabled: true/);
+  assert.ok(!text.includes('- insert:'), 'A2 清单为空时不该有 insert 段');
+});
+
+test('renderPatchFor: insert 与 disable 可以同时存在', () => {
+  const text = renderActivationPatch(
+    [{ packageName: 'dsh-x', entryId: 'dsdesktop-x' }], {}, ['cost-meter'],
+  );
+  assert.match(text, /- insert:\n {4}- id: dsdesktop-x/);
+  assert.match(text, /- id: cost-meter\n {2}disabled: true/);
+});
+
+test('renderPatchFor: 两段都空时仍是合法的空 YAML 列表（迁移后这是常态）', () => {
+  // A2 清单已空、没人被停用 —— 绝大多数次启动就是这个状态。空文件会让 dsh 解析
+  // patch 直接报错。
+  const text = renderActivationPatch([], {}, []);
+  assert.match(text, /^\[\]$/m);
 });

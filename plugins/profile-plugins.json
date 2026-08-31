@@ -1,0 +1,18 @@
+[
+  {
+    "packageName": "@easytz/dsh-market",
+    "required": true
+  },
+  {
+    "packageName": "@easytz/dsh-git"
+  },
+  {
+    "packageName": "@easytz/dsh-terminal-panel"
+  },
+  {
+    "packageName": "@easytz/dsh-ui-balance"
+  },
+  {
+    "packageName": "@easytz/dsh-reveal-explorer"
+  }
+]

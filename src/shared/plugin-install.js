@@ -99,9 +99,15 @@ function loadPluginManifest(pluginsDir) {
 function vendoredPluginNames(rootDir) {
   const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
   const deps = pkg.dependencies ?? {};
-  return loadPluginManifest(path.join(rootDir, 'plugins'))
-    .map((plugin) => plugin.packageName)
-    .filter((name) => name in deps);
+  // 两份清单都要算进来：A2（plugins.json，拷进内核）与 A1（profile-plugins.json，
+  // 打成 tarball 装进用户 profile）。发版闸门查的是「源码是不是来自钉住的 tag」，
+  // 这个风险对两条路径完全一样——A1 那条甚至更隐蔽，因为 npm pack 打的就是工作副本。
+  const { loadProfilePluginManifest } = require('./profile-plugins');
+  const names = [
+    ...loadPluginManifest(path.join(rootDir, 'plugins')).map((plugin) => plugin.packageName),
+    ...loadProfilePluginManifest(path.join(rootDir, 'plugins')).map((plugin) => plugin.packageName),
+  ];
+  return [...new Set(names)].filter((name) => name in deps);
 }
 
 /** 读插件自己的 package.json，取包名与版本。 */
@@ -199,23 +205,36 @@ function copyPluginSource(pluginSrcDir, nodeModulesDir, packageName) {
  * @param {Record<string, boolean>} [userState] 用户开关状态（userData/plugin-state.json）
  * @returns {string}
  */
-function renderActivationPatch(plugins, userState = {}) {
-  return renderPatchFor(plugins.filter((plugin) => isPluginEnabled(plugin, userState)));
+function renderActivationPatch(plugins, userState = {}, disableEntryIds = []) {
+  return renderPatchFor(plugins.filter((plugin) => isPluginEnabled(plugin, userState)), disableEntryIds);
 }
 
 /**
  * 把**已经选定**的插件渲染成 overlay 文本。选谁是调用方的事，这里不再过滤——
  * 正常启动按用户开关选，安全模式按 `safeMode` 标记选，两条路选完都到这儿。
+ *
+ * 第二个参数是**要停用的 profile 层 entry id**。A2 插件的「关掉」等于不生成它的
+ * `- insert:`（我们自己是插入方，不插就是关）；profile 层（A1）插件是自己插自己的
+ * 第 2 层条目，我们插不了也删不掉，只能从第 4 层压一条 `disabled: true` 上去。
+ * 同一个「停用」在两层是两种写法，这是分层带来的，不是设计冗余。
+ *
+ * **调用方必须保证这些 id 真实存在**：dsh 自己给遥测生成 disable 补丁时也先查了
+ * `hasRow`，说明 patch 一个不存在的 id 不是安全操作。
+ *
  * @param {Array<{packageName: string, entryId: string}>} selected
+ * @param {string[]} [disableEntryIds] profile 层要停用的 entry id
  * @returns {string}
  */
-function renderPatchFor(selected) {
+function renderPatchFor(selected, disableEntryIds = []) {
   const rows = selected
     .map((plugin) => `    - id: ${plugin.entryId}\n      name: '${plugin.packageName}'\n`);
-  // 空清单（或全部被关掉）时输出合法的空 YAML 列表 `[]`，不能是空文件——
-  // 否则 dsh 解析 patch 时直接报错。
+  const insert = rows.length ? `- insert:\n${rows.join('')}` : '';
+  const disables = disableEntryIds.map((id) => `- id: ${id}\n  disabled: true\n`).join('');
+  const body = `${insert}${disables}`;
+  // 两段都空时输出合法的空 YAML 列表 `[]`，不能是空文件——否则 dsh 解析 patch
+  // 时直接报错。迁移之后这是**常态**：A2 清单已空，没人被停用时 body 就是空的。
   return '# 由 dsDesktop 生成，请勿手改；插件清单见 plugins/plugins.json。\n'
-    + (rows.length ? `- insert:\n${rows.join('')}` : '[]\n');
+    + (body.length ? body : '[]\n');
 }
 
 /**
@@ -225,11 +244,12 @@ function renderPatchFor(selected) {
  * @param {string} patchPath
  * @param {Array<{packageName: string, entryId: string, enabled?: boolean, safeMode?: boolean}>} plugins
  * @param {Record<string, boolean>} [userState]
+ * @param {string[]} [disableEntryIds] profile 层要停用的 entry id（见 renderPatchFor）
  * @returns {string} patchPath
  */
-function writeActivationPatch(patchPath, plugins, userState) {
+function writeActivationPatch(patchPath, plugins, userState, disableEntryIds = []) {
   fs.mkdirSync(path.dirname(patchPath), { recursive: true });
-  fs.writeFileSync(patchPath, renderActivationPatch(plugins, userState), 'utf8');
+  fs.writeFileSync(patchPath, renderActivationPatch(plugins, userState, disableEntryIds), 'utf8');
   return patchPath;
 }
 
@@ -241,14 +261,38 @@ function writeActivationPatch(patchPath, plugins, userState) {
  * —— 而这个功能恰恰是在「开关状态可能有问题」时用的：状态文件被手改坏、
  * 或恢复入口自己被关掉，逃生舱就进不去了。
  *
+ * **profile 层（A1）的插件要主动 disable**，这是第二件事，不能只靠「不生成 insert」：
+ * 那些插件是自己 insert 自己的第 2 层条目的，我们不生成它、也就关不掉它。不 disable
+ * 的话，用户从市场装的插件把内核搞崩时安全模式救不了他——它在安全模式下照样加载。
+ * 要 disable 哪些由调用方算好传进来（见 profile-plugins.js 的 profileBundleEntryIds），
+ * 这里只负责渲染：这个模块不该去认识 profile 目录长什么样。
+ *
  * @param {string} patchPath
  * @param {Array<{packageName: string, entryId: string, enabled?: boolean, safeMode?: boolean}>} plugins
+ * @param {string[]} [disableEntryIds] 要额外 disable 的 loader entry id（profile 层插件）
  * @returns {string} patchPath
  */
-function writeSafeModePatch(patchPath, plugins) {
+function writeSafeModePatch(patchPath, plugins, disableEntryIds = []) {
   fs.mkdirSync(path.dirname(patchPath), { recursive: true });
-  fs.writeFileSync(patchPath, renderPatchFor(safeModePlugins(plugins)), 'utf8');
+  fs.writeFileSync(patchPath, renderSafeModePatch(safeModePlugins(plugins), disableEntryIds), 'utf8');
   return patchPath;
+}
+
+/**
+ * 渲染安全模式的 patch：安全插件的 `- insert:` + profile 层插件的 disable 条目。
+ *
+ * 两段都可能为空。**全空时必须输出 `[]`**，不能是空文件——dsh 解析 patch 会直接报错，
+ * 而那正好发生在用户最需要安全模式的时候。
+ */
+function renderSafeModePatch(selected, disableEntryIds) {
+  const insertRows = selected
+    .map((plugin) => `    - id: ${plugin.entryId}\n      name: '${plugin.packageName}'\n`);
+  const insert = insertRows.length ? `- insert:\n${insertRows.join('')}` : '';
+  const disables = (disableEntryIds ?? [])
+    .map((id) => `- id: ${id}\n  disabled: true\n`)
+    .join('');
+  const body = `${insert}${disables}`;
+  return '# 由 dsDesktop 生成（安全模式），请勿手改。\n' + (body.length ? body : '[]\n');
 }
 
 /**

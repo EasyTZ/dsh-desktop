@@ -61,7 +61,8 @@ function pinnedTag(name) {
  * @returns {string[]} 问题描述；空数组表示可以放行
  */
 function inspect(name) {
-  const repo = join(workspace, name);
+  // 同级目录名是仓库名，不带 scope（`@easytz/dsh-git` 的仓库目录是 `dsh-git`）。
+  const repo = join(workspace, name.startsWith('@') ? name.split('/')[1] : name);
   const problems = [];
   if (!existsSync(join(repo, '.git'))) return [`${name}: ${repo} 不是 git 仓库，无法核对`];
 
@@ -121,6 +122,7 @@ try {
   run('verify-kernel.mjs');
   run('pack-kernel.mjs');
   run('pack-plugins.mjs');
+  run('pack-profile-plugins.mjs');
   runCmd(dirOnly ? 'npx electron-builder --win --dir' : 'npx electron-builder --win');
   if (!dirOnly) run('collect-release.mjs');
 } finally {
