@@ -9,6 +9,7 @@ const { createTray, buildTrayMenu } = require('./tray');
 const { createSplashWindow } = require('./splash');
 const { TaskNotifications } = require('./notifications');
 const { KernelUpdater } = require('./kernel-updater');
+const { AppUpdateChecker } = require('./app-updater');
 const { summarizeStderr } = require('../shared/error-detail');
 const { needsUnpack, unpackKernel } = require('../shared/kernel-unpack');
 const { kernelPaths } = require('../shared/kernel-paths');
@@ -34,6 +35,14 @@ if (!gotLock) {
   let dsh = null;
   /** @type {InstanceType<typeof KernelUpdater>|null} */
   let updater = null;
+  /** @type {InstanceType<typeof AppUpdateChecker>|null} */
+  let appUpdateChecker = null;
+  // 外壳自身查到的新版本（{version, url} 或 null）。托盘菜单要在检查完成后随时
+  // 能重建出「有没有这一项」，而检查完成时托盘不一定已经建好（首启时 check 的
+  // 8s 延迟点，tray 通常已经在 service 的 ready 回调里建过了，但顺序不作为
+  // 保证——存一份状态比假设时序更稳）。
+  /** @type {{version: string, url: string|null}|null} */
+  let appUpdateInfo = null;
   let isQuitting = false;
   let kernelFallbackAttempted = false;
   // 安全模式：只加载清单里标了 safeMode 的插件（当前只有插件管理面板）。
@@ -52,6 +61,9 @@ if (!gotLock) {
     : path.join(__dirname, '..', '..', 'plugins-dist');
   const USER_KERNEL_DIR = path.join(app.getPath('userData'), 'kernel');
   const UPDATER_CONFIG_PATH = path.join(app.getPath('userData'), 'updater.json');
+  // 外壳自身版本更新检查的节流状态，跟内核更新的 updater.json 分开存——两者
+  // 节流互不影响，混在一个文件里没有任何好处，只会让读写逻辑绑死。
+  const APP_UPDATER_CONFIG_PATH = path.join(app.getPath('userData'), 'app-updater.json');
   // 插件停用 overlay（patch 层栈第 4 层）：启动时经 `--patch` 交给内核。插件迁到
   // profile 层之后它**只用来停用条目**，不再负责挂载任何东西 —— 常态下是一份空的
   // `[]`。放 userData 而不是 resources：打包态 resources 只读，且内容随开关变化。
@@ -315,13 +327,7 @@ if (!gotLock) {
         // 主窗口真正显示（首帧就绪）后再关闪屏，避免中间出现空白帧。
         win.once('show', closeSplash);
         if (!tray) {
-          tray = createTray({
-            onShow: toggleWindow,
-            onQuit: quitApp,
-            onCheckUpdate: openUpdater,
-            onFeedback: openFeedback,
-            kernelVersion: updater ? updater.getCurrentVersion() : null,
-          });
+          tray = createTray(trayMenuOpts());
         }
       }
     });
@@ -433,13 +439,7 @@ if (!gotLock) {
     // 内核更新完成后重建托盘菜单，让上面显示的版本号跟着变。
     created.on('state', (state) => {
       if (state.phase !== 'done' || !tray) return;
-      tray.setContextMenu(buildTrayMenu({
-        onShow: toggleWindow,
-        onQuit: quitApp,
-        onCheckUpdate: openUpdater,
-        onFeedback: openFeedback,
-        kernelVersion: state.currentVersion,
-      }));
+      tray.setContextMenu(buildTrayMenu(trayMenuOpts()));
     });
 
     ipcMain.handle('updater:get-state', () => created.getState());
@@ -458,6 +458,45 @@ if (!gotLock) {
 
   const openFeedback = () => {
     shell.openExternal(ISSUES_URL).catch((err) => console.error('[app] 打开反馈页面失败:', err));
+  };
+
+  const openAppUpdate = () => {
+    const url = appUpdateInfo?.url ?? `https://github.com/EasyTZ/dsh-desktop/releases`;
+    shell.openExternal(url).catch((err) => console.error('[app] 打开更新页面失败:', err));
+  };
+
+  /** 托盘菜单当前应该长什么样——内核更新完成、外壳查到新版本，两处都要重建它。 */
+  const trayMenuOpts = () => ({
+    onShow: toggleWindow,
+    onQuit: quitApp,
+    onCheckUpdate: openUpdater,
+    onFeedback: openFeedback,
+    kernelVersion: updater ? updater.getCurrentVersion() : null,
+    appUpdate: appUpdateInfo,
+    onOpenAppUpdate: openAppUpdate,
+  });
+
+  // 外壳自身的更新检查：跟内核更新是两套独立的节流与状态（见 app-updater.js
+  // 顶部注释）。查到新版本只做两件事——系统通知（AppUpdateChecker 自己弹，
+  // 且只弹一次）、把结果记下来供托盘菜单常驻展示一项，不打断、不弹应用内窗口。
+  const initAppUpdateChecker = () => {
+    appUpdateChecker = new AppUpdateChecker({
+      logger: console,
+      currentVersion: app.getVersion(),
+      configPath: APP_UPDATER_CONFIG_PATH,
+    });
+  };
+
+  const maybeAutoCheckAppUpdate = () => {
+    if (!appUpdateChecker || !appUpdateChecker.shouldAutoCheck()) return;
+    setTimeout(() => {
+      if (isQuitting || !appUpdateChecker) return;
+      appUpdateChecker.check().then((state) => {
+        if (state.phase !== 'available' || !state.latestVersion) return;
+        appUpdateInfo = { version: state.latestVersion, url: state.releaseUrl };
+        if (tray) tray.setContextMenu(buildTrayMenu(trayMenuOpts()));
+      }).catch(() => {});
+    }, 8000);
   };
 
   // 启动后延迟自动检查：距上次检查超过 24h 才请求。发现新版本才弹更新中心
@@ -544,6 +583,8 @@ if (!gotLock) {
     globalShortcut.register('CommandOrControl+Alt+Space', toggleWindow);
     initUpdater();
     maybeAutoCheck();
+    initAppUpdateChecker();
+    maybeAutoCheckAppUpdate();
     // 上次弃用内核时若删到一半被杀掉，残骸会留在磁盘上（300+ MB）。异步清一遍，
     // 不占启动路径。
     sweepDiscardedKernels();

@@ -417,6 +417,19 @@ ctx.slots.inject("conversation.chat.turnTail", () => {
 
 Windows toast 还要求存在指向本应用、且 AppUserModelID 与 `app.setAppUserModelId` 一致的开始菜单快捷方式；安装版由 NSIS 建，绿色版/win-unpacked 由 `ensureStartMenuShortcut()` 首启补建（已存在则跳过，别改成每次重写——那是启动路径上的冗余磁盘写）。
 
+### 外壳自身版本更新（`app-updater.js`）
+
+跟内核更新（`kernel-updater.js`）是两回事，别混在一起想：内核能在本地热更新替换（下载到用户可写目录、验证后原子切换），外壳是签名安装包 / 绿色版 zip，**运行中替换不了自己的 exe**，也没有中间态可用。所以 `AppUpdateChecker` 只做一件事——查 GitHub 最新 Release（`GET /repos/EasyTZ/dsh-desktop/releases/latest`）、跟 `app.getVersion()` 比对、发现新版就提醒，**不下载、不安装**：装成安装版还是绿色版、什么时候装，都还是用户自己的事。
+
+**不用 `electron-updater`**：本项目定死了「不引第三方运行时依赖」（见「约定」一节），这条规则没有为外壳自更新单开例外；而且差分静默更新原本也要靠签了名的安装包才可靠，绿色版 zip 用不上。
+
+提醒只有两处，都不新开应用内窗口：
+
+- **系统通知**，`AppUpdateChecker._notify` 弹一次——`notifiedVersion` 记进 `userData/app-updater.json`，同一个新版本不会跟着每天一次的自动检查重复弹，那样是骚扰不是提醒。
+- **托盘菜单常驻一项**「有新版本 vX.Y.Z」（`tray.js` 的 `appUpdate` 参数），查到就一直显示直到应用重启，不受通知的「只弹一次」节流——它是静态展示，不是主动打扰，用户没看到系统通知的话至少托盘里找得到。
+
+跟内核更新用**各自独立**的节流文件（`app-updater.json` vs `updater.json`）与各自的 24h 间隔常量，互不影响；`_fetchLatestRelease` / `_notify` 拆成可覆盖的方法，测试（`test/app-updater.test.js`）靠换掉这两个方法在不联网、不弹真通知的前提下驱动 `check()`——手法照抄 `kernel-updater.test.js` 换 `_fetchLatest` 那一套。
+
 ## 打包要点
 
 `electron-builder.yml`：`asar` 只打 `src/**` + `package.json`（生产依赖只是 vendor 用的插件 git 依赖，`beforeBuild` 返回 `false` 跳过 install/rebuild）；`kernel/` 与 `plugins-dist/` 走 extraResources（`plugins-dist/profile/` 是 `scripts/pack-profile-plugins.mjs` 用 `npm pack` 打出的 tgz + 索引，首启离线播种、以及用户卸载后从市场装回来都要靠它）；`electronDist: node_modules/electron/dist` 复用本机 Electron。**首次** `npm install`（拉插件 git 依赖）需要联网，lockfile 未变时的重复构建不联网——这是拆仓主动接受的代价。

@@ -116,6 +116,12 @@ if (linked.length > 0) {
 }
 
 try {
+  // 打包前先强制把插件重新拉到 package.json 当前钉住的版本——这一步以前要人
+  // 记得手动跑 `npm run refresh-plugins`，忘了的后果是：pack-profile-plugins
+  // 打的是 node_modules 里那份**旧**内容，版本号却对得上新 tag，verify-plugin-pins
+  // 也测不出来（它只查有没有钉 tag，不查 node_modules 是不是那个 tag 的内容）。
+  // 自动跑掉这步，「忘了刷新」这类人为失误就不存在了。
+  run('refresh-plugins.mjs');
   run('verify-plugin-pins.mjs');
   run('prepare-kernel.mjs');
   // pack-profile-plugins 必须排在 verify-kernel **之前**：自检要拿它产出的 tgz 把
