@@ -4,8 +4,8 @@
 //   node scripts/dist.mjs --dir  只出 win-unpacked
 //
 // 为什么要包一层，而不是让人自己记着 unlink：联调模式可以常开，唯独打包这一步
-// 必须用钉住的版本（`install-plugin` 与 `pack-plugins` 都带 dereference 拷贝，
-// 联调下会把工作副本的当前内容摊进安装包）。让脚本来记，人只管 `npm run dist`。
+// 必须用钉住的版本（`pack-profile-plugins` 的 `npm pack` 打的是 node_modules 里
+// 当前那份，联调下就是工作副本的现状）。让脚本来记，人只管 `npm run dist`。
 //
 // **但自动解除联调有个反向陷阱**：如果插件工作副本里有没提交/没打 tag 的改动，
 // 解除之后拉回来的是钉住的旧版本，打出来的包**不含你的改动**，而你以为含。这和
@@ -18,7 +18,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { vendoredPluginNames } from '../src/shared/plugin-install.js';
+import { vendoredPluginNames } from '../src/shared/profile-plugins.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const workspace = resolve(root, '..');
@@ -109,7 +109,7 @@ if (linked.length > 0) {
   // 先落标记再解除。`finally` 只在进程正常走完时执行，**强杀（Ctrl-C 两下 /
   // taskkill）不会执行** —— v1.4.1 那次打包被强杀，联调就这么被静默关掉了，人
   // 以为还开着，改半天不生效。标记文件不依赖进程善终：只要它还在，就说明恢复
-  // 那一步没跑完，install-plugin 与 plugins-status 会大声提醒。
+  // 那一步没跑完，plugins-status 会大声提醒。
   writeFileSync(UNLINK_MARKER, `${new Date().toISOString()}\n${linked.join('\n')}\n`, 'utf8');
   run('link-plugins.mjs', ['--off']);
   restore = true;
@@ -117,12 +117,12 @@ if (linked.length > 0) {
 
 try {
   run('verify-plugin-pins.mjs');
-  run('install-plugin.mjs');
   run('prepare-kernel.mjs');
+  // pack-profile-plugins 必须排在 verify-kernel **之前**：自检要拿它产出的 tgz 把
+  // 插件播种进隔离 home，否则验的是一个没有插件的内核（见 verify-kernel.mjs 顶部）。
+  run('pack-profile-plugins.mjs');
   run('verify-kernel.mjs');
   run('pack-kernel.mjs');
-  run('pack-plugins.mjs');
-  run('pack-profile-plugins.mjs');
   runCmd(dirOnly ? 'npx electron-builder --win --dir' : 'npx electron-builder --win');
   if (!dirOnly) run('collect-release.mjs');
 } finally {
@@ -132,8 +132,6 @@ try {
     console.log('\n[dist] 恢复联调模式…');
     try {
       run('link-plugins.mjs');
-      // 内核里现在装的是钉住的那份，重装一次让它指回工作副本，恢复到打包前的开发态。
-      run('install-plugin.mjs');
       rmSync(UNLINK_MARKER, { force: true });
     } catch (error) {
       console.error('[dist] 恢复联调失败，请手动执行 npm run link-plugins：', error?.message ?? error);

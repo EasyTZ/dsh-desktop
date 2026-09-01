@@ -1,6 +1,6 @@
 {
   "name": "deepseek-desktop",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "DeepSeek Harness 桌面版 —— 以 dsh 为内核的 Windows 桌面应用",
   "main": "src/main/index.js",
   "dshKernel": {
@@ -15,7 +15,6 @@
     "test": "node --test \"test/*.test.js\"",
     "typecheck": "tsc -p tsconfig.json",
     "icon": "node scripts/gen-icon.mjs",
-    "install-plugin": "node scripts/install-plugin.mjs",
     "link-plugins": "node scripts/link-plugins.mjs",
     "unlink-plugins": "node scripts/link-plugins.mjs --off",
     "plugins-status": "node scripts/link-plugins.mjs --status",
@@ -25,12 +24,11 @@
     "dist:dir": "node scripts/dist.mjs --dir",
     "verify-kernel": "node scripts/verify-kernel.mjs",
     "pack-kernel": "node scripts/pack-kernel.mjs",
-    "pack-plugins": "node scripts/pack-plugins.mjs",
     "pack-profile-plugins": "node scripts/pack-profile-plugins.mjs"
   },
   "dependencies": {
     "@easytz/dsh-git": "github:EasyTZ/dsh-git#v0.5.0",
-    "@easytz/dsh-market": "github:EasyTZ/dsh-market#v0.1.0",
+    "@easytz/dsh-market": "github:EasyTZ/dsh-market#v0.1.1",
     "@easytz/dsh-reveal-explorer": "github:EasyTZ/dsh-reveal-explorer#v0.2.0",
     "@easytz/dsh-terminal-panel": "github:EasyTZ/dsh-terminal-panel#v0.2.0",
     "@easytz/dsh-ui-balance": "github:EasyTZ/dsh-ui-balance#v0.2.0"

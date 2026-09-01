@@ -8,8 +8,13 @@
 // 就指向 src/index.js），当时是靠人肉复查发现的，不能指望下次还有这个运气。
 //
 // 检查方式跟热更新的 kernel-updater._verify 同源：用隔离的 DSH_HOME 真 boot 一次
-// web，轮询到 HTTP 应答（状态码 < 500）就算通过。**必须带 --patch overlay**，
-// 否则验的是一个「没有插件的内核」，插件加载阶段的崩溃会整个溜过去。
+// web，轮询到 HTTP 应答（状态码 < 500）就算通过。**必须先把 profile 层插件播种进
+// 那个隔离 home**，否则验的是一个「没有插件的内核」，插件加载阶段的崩溃会整个溜
+// 过去 —— 而用户跑的从来是「内核 + 插件」这个组合。
+//
+// 插件迁到 profile 层（A1）之后播种方式变了：不再是往 overlay 里写 `- insert:`，
+// 而是拿 plugins-dist/profile 里的 tgz 走和正式启动完全相同的那套对账装进去。
+// 因此 dist.mjs 里 pack-profile-plugins 必须排在本脚本**之前**。
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -20,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const { findFreePort } = require('../src/shared/net.js');
 const { findDshInstallSync } = require('../src/shared/dsh-locate.js');
-const { loadPluginManifest, writeActivationPatch } = require('../src/shared/plugin-install.js');
+const { reconcileProfilePlugins } = require('../src/main/profile-plugins-installer.js');
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const kernelDir = join(root, 'kernel');
@@ -43,15 +48,35 @@ if (!existsSync(nodeExe) || !existsSync(binJs)) {
 auditEntryPoints(join(kernelDir, 'runtime', 'node_modules', '@deepseek-ai', 'dsh'), findDshInstallSync());
 
 const home = mkdtempSync(join(tmpdir(), 'dsh-verify-'));
-const patchPath = join(home, 'desktop.patch.yml');
-// 构建期自检不带用户开关状态（默认全开）：这里要验的是「插件加载路径」本身。
-writeActivationPatch(patchPath, loadPluginManifest(join(root, 'plugins')));
+
+// 把随包分发的插件装进这个隔离 home。用的是运行期那份 reconcileProfilePlugins，
+// 不是另写一遍 —— 「怎么装插件」只能有一处实现，两处迟早分叉，而分叉的那天自检
+// 验的就不是用户真正会跑的东西了。
+//
+// 构建期不带用户开关状态（默认全开）：这里要验的是「插件加载路径」本身。也因此
+// 不需要 --patch overlay —— 迁到 profile 层之后 overlay 只用来**停用**条目，构建
+// 期没有任何要停用的。
+const profileDistDir = join(root, 'plugins-dist', 'profile');
+if (!existsSync(profileDistDir)) {
+  fail(`没有 ${relative(root, profileDistDir)}，先跑 npm run pack-profile-plugins（dist.mjs 已排好顺序）`);
+}
+const seeded = await reconcileProfilePlugins({
+  profileDistDir,
+  nodeExe,
+  binJs,
+  pnpmCliPath: join(kernelDir, 'pnpm', 'bin', 'pnpm.cjs'),
+  shimDir: join(home, 'pnpm-shim'),
+  seedStatePath: join(home, 'seeded.json'),
+  logger: console,
+  env: { ...process.env, DSH_HOME: home },
+});
+// 这里**必须硬失败**，不能像运行期那样「装不上就少几个插件」：构建期装不上意味着
+// 打出来的包里这些插件也装不上，而自检若照旧放行，验的就又是一个没有插件的内核。
+if (seeded.failed.length > 0) fail(`profile 插件没装进自检 home：${seeded.failed.join(', ')}`);
+console.log(`[verify-kernel] profile 插件已播种（${seeded.installed.length} 个），开始 boot 自检…`);
 
 const port = await findFreePort();
-// --patch 必须排在 --host 之前：bin.js 的 launcher 只解析自己的 flag，从第一个不
-// 认识的 token 起全当内层参数透传，排在 --host 后面的 --patch 会被 web app 当成
-// 未知选项直接退出。
-const child = spawn(nodeExe, [binJs, 'web', '--patch', patchPath, '--host', '127.0.0.1', '--port', String(port)], {
+const child = spawn(nodeExe, [binJs, 'web', '--host', '127.0.0.1', '--port', String(port)], {
   cwd: root,
   env: { ...process.env, DSH_HOME: home, DSH_TELEMETRY_MODE: 'DISABLED' },
   windowsHide: true,

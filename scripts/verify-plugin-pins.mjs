@@ -1,17 +1,17 @@
 // 发版闸门：插件源码必须来自钉住的 git tag，不能是联调用的本地链接。
 //
-// 为什么必须有这一步：install-plugin 与 pack-plugins 都带 dereference 拷贝，
-// 处于联调模式时它们会把**工作副本当前的内容**摊进内核和安装包 —— 包括你还没
-// 提交、没推送的改动。而 package.json / plugins.json / 内核依赖登记里的版本号
-// 仍然写着 tag 的号。产物自称 v0.1.1，内容却和 GitHub 上的 v0.1.1 不是一回事，
-// 事后既复现不了也追溯不了。
+// 为什么必须有这一步：pack-profile-plugins 的 `npm pack` 打的是 node_modules 里
+// **当前**那份内容。处于联调模式时那是一个指向工作副本的 junction，于是你还没
+// 提交、没推送的改动会被原样打进 tgz，而 package.json 里的版本号仍然写着 tag 的
+// 号。产物自称 v0.1.1，内容却和 GitHub 上的 v0.1.1 不是一回事，事后既复现不了
+// 也追溯不了。
 //
 // 检查一个符号链接就够了：没链接就说明 node_modules 里那份是 npm 按 lockfile
 // 从钉住的 commit 拉下来的，本身就可复现。
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { vendoredPluginNames } from '../src/shared/plugin-install.js';
+import { vendoredPluginNames } from '../src/shared/profile-plugins.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));

@@ -6,11 +6,10 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 const { isNewer } = require('../shared/version');
-const {
-  dshManifestPath, kernelNodeModulesDir, readKernelVersion, resolvePackagedKernel,
-} = require('../shared/kernel-paths');
-const { loadPluginManifest, installPlugin, resolvePluginSrcDir, writeActivationPatch } = require('../shared/plugin-install');
-const { loadPluginState } = require('../shared/plugin-state');
+const { readKernelVersion, resolvePackagedKernel } = require('../shared/kernel-paths');
+const { loadPluginState, disabledEntryIds, writeActivationPatch } = require('../shared/activation-patch');
+const { profileBundleEntryIds } = require('../shared/profile-plugins');
+const { reconcileProfilePlugins } = require('./profile-plugins-installer');
 
 const REGISTRY_PRESETS = [
   'https://registry.npmmirror.com',
@@ -92,7 +91,9 @@ class KernelUpdater extends EventEmitter {
     this.logger = opts.logger ?? console;
     this.userKernelDir = opts.userKernelDir;
     this.builtinKernelDir = opts.builtinKernelDir;
-    this.pluginsDir = opts.pluginsDir;
+    // 随包分发的 profile 插件产物目录（tgz + index.json）。自检时用它把插件播种
+    // 进隔离 home，让自检覆盖「新内核 + 我们的插件」这个真实组合。
+    this.profileDistDir = opts.profileDistDir ?? null;
     this.configPath = opts.configPath;
     this.pnpmCliPath = opts.pnpmCliPath;
     this.builtinNodeExe = opts.builtinNodeExe;
@@ -277,7 +278,8 @@ class KernelUpdater extends EventEmitter {
     fs.copyFileSync(this.builtinNodeExe, path.join(staging, 'node.exe'));
 
     await this._pnpmInstall(staging, version);
-    this._installPlugins(staging);
+    // 插件不再拷进内核：它们住在用户 profile 里，换内核不影响它们，所以这里
+    // 没有「把插件装进新内核」这一步了。但**自检仍然要覆盖插件加载**，见 _verify。
     await this._verify(staging, version);
 
     // 原子切换：先挪走旧内核，再把 staging 转正。
@@ -387,63 +389,53 @@ class KernelUpdater extends EventEmitter {
     });
   }
 
+
   /**
-   * 把清单里的插件全部装进新内核。**任何一个装失败，整次更新就失败。**
+   * 把随包分发的插件装进自检用的隔离 home，返回那个 home 的 profile 目录。
    *
-   * 曾经这里是「失败就 warn 一声接着装下一个」，那会漏出一个很隐蔽的洞：
-   * 假设装失败的正好是**被用户关掉**的插件 —— 它不在 `_activationPatch` 生成的
-   * overlay 里，于是 `_verify` 起的那次自检根本不加载它，自检照样通过，新内核被
-   * 扶正。等用户哪天在插件面板里把它重新打开、重启，内核 import 一个不存在的
-   * 模块 → 秒退 → 黑屏。事故发生在装完的好几天之后，且和「更新内核」这个动作
-   * 完全对不上，基本没法排查。
+   * 用的是和正式启动完全相同的那套对账（reconcileProfilePlugins），所以它顺带
+   * 验证了**这批 tarball 本身能不能装** —— 那是发行包里的东西，装不上等于这个
+   * 安装包是坏的，越早发现越好。
    *
-   * 「被关掉的插件也要照样装」是 installPlugin 的既定意图（见 plugin-install.js），
-   * 装不上就说明这个新内核不完整，不该扶正。失败的代价只是这次更新不生效、
-   * 继续用当前能跑的内核，比留一颗定时炸弹便宜得多。
+   * 装不上不抛：自检的主目的是「新内核能不能起来」，插件装不进隔离 home 可能只是
+   * 临时的磁盘/权限问题，不该因此判定内核不可用。真装不上时自检退化成老行为
+   * （验一个零插件的内核），日志里会有记录。
    */
-  _installPlugins(kernelDir) {
-    if (!this.pluginsDir || !fs.existsSync(this.pluginsDir)) {
-      this.logger.warn('[updater] 未找到插件目录，跳过插件重装:', this.pluginsDir);
-      return;
+  async _seedProfilePlugins(verifyHome, nodeExe, binJs) {
+    const profile = path.join(verifyHome, 'profiles', 'web');
+    if (!this.profileDistDir) return profile;
+    try {
+      await reconcileProfilePlugins({
+        profileDistDir: this.profileDistDir,
+        // 用**被自检的那个内核**去装：装插件这一步本身也就成了对新内核的一次
+        // 检验（它的 dsh plugin / pnpm 转发链路能不能跑通）。
+        nodeExe,
+        binJs,
+        pnpmCliPath: this.pnpmCliPath,
+        shimDir: path.join(verifyHome, 'pnpm-shim'),
+        seedStatePath: path.join(verifyHome, 'seeded.json'),
+        logger: this.logger,
+        env: { ...process.env, DSH_HOME: verifyHome },
+      });
+    } catch (error) {
+      this.logger.warn(`[updater] 自检 home 播种插件失败，本次自检不覆盖插件加载：${error?.message ?? error}`);
     }
-    const plugins = loadPluginManifest(this.pluginsDir);
-    for (const plugin of plugins) {
-      try {
-        installPlugin({
-          pluginSrcDir: resolvePluginSrcDir({
-            pluginsDir: this.pluginsDir,
-            nodeModulesDir: this.nodeModulesDir,
-            packageName: plugin.packageName,
-          }),
-          nodeModulesDir: kernelNodeModulesDir(kernelDir),
-          manifestPath: dshManifestPath(kernelDir),
-          expectedName: plugin.packageName,
-          logger: this.logger,
-        });
-      } catch (error) {
-        throw new Error(
-          `插件 ${plugin.packageName} 安装失败，新内核不完整：${error?.message ?? error}`,
-          { cause: error },
-        );
-      }
-    }
+    return profile;
   }
 
   /**
-   * 备好自检用的激活 overlay，返回路径；不可用时返回 null。与 DshService 写同一
-   * 个文件、同一份内容（含用户开关状态——关掉的插件同样不该出现在自检里），
-   * 所以先后顺序无所谓。
+   * 备好自检用的 overlay，返回路径；写不出来时返回 null。与 DshService 写同一个
+   * 文件、同一份内容，所以先后顺序无所谓。
+   *
+   * 内容就是「用户停用了哪些条目」。**不吞异常**：吞掉就等于自检跑的配置和将来
+   * 真正启动的配置不是同一个。
    * @returns {string|null}
    */
-  _activationPatch() {
-    if (!this.pluginsDir || !this.activationPatchPath) return null;
-    // 这里**不吞异常**，理由和 _installPlugins 同源：吞掉就等于「自检验的内核」
-    // 和「将来真正启动的内核」不是同一个配置 —— 自检跑的是没有插件的干净内核，
-    // 通过之后扶正，用户下次启动才带着 overlay 加载插件，崩在那时候。
-    // 只有「压根没配插件」（上面那个 return null）才是合法的无 overlay。
-    return writeActivationPatch(
-      this.activationPatchPath, loadPluginManifest(this.pluginsDir), loadPluginState(this.pluginStatePath),
-    );
+  _activationPatch(profileDirForVerify) {
+    if (!this.activationPatchPath) return null;
+    const all = profileBundleEntryIds(profileDirForVerify);
+    const wanted = new Set(disabledEntryIds(loadPluginState(this.pluginStatePath)));
+    return writeActivationPatch(this.activationPatchPath, all.filter((id) => wanted.has(id)));
   }
 
   /**
@@ -456,11 +448,17 @@ class KernelUpdater extends EventEmitter {
     // 用隔离的 DSH_HOME 自检，避免与正在运行的主内核并发读写用户 profile。
     const verifyHome = path.join(path.dirname(kernelDir), '.verify-home');
     fs.rmSync(verifyHome, { recursive: true, force: true });
-    // 自检必须带上激活 overlay：不带就等于验了一个「没有插件的内核」，而真正
-    // 启动时是带着 overlay 跑的 —— 插件加载阶段的崩溃就会溜过自检。
+    // **把随包分发的插件播种进这个隔离 home**，否则自检验的是一个「零插件的内核」。
+    //
+    // 插件迁到 profile 层之后，它们不再随内核走 —— 而自检用的是干净的 .verify-home，
+    // 里面什么都没有。不补这一步，自检就只能证明「内核自己能起来」，证明不了
+    // 「内核 + 我们的插件能一起起来」，而后者才是用户真正会遇到的组合。这个洞是
+    // 迁移带来的，且不会有任何报错提示——自检照样通过，崩溃推迟到用户重启之后。
+    const seeded = await this._seedProfilePlugins(verifyHome, nodeExe, binJs);
+
     // `--patch` 排在 `--host` 之前，理由见 DshService 里的同名注释。
     const args = [binJs, 'web'];
-    const patchPath = this._activationPatch();
+    const patchPath = this._activationPatch(seeded);
     if (patchPath) args.push('--patch', patchPath);
     // 端口交给内核自己申请（`--port 0`），与 DshService 的正式启动路径保持一致。
     // 这里曾经是「父进程探一个空闲端口再交给内核」，那条老路有固有的时间差：探测

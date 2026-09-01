@@ -303,7 +303,48 @@ function planProfileCleanup(desired, seeded, entryIdsOf) {
   return remove;
 }
 
+/**
+ * 解析插件源码目录：先查 plugins/<packageName>（随仓库走的），再查
+ * node_modules/<packageName>（git 依赖 vendor 的）。打包态只有 resources/plugins
+ * 一处（extraResources 已把全部源码摊进去），nodeModulesDir 传 null 即可。
+ *
+ * 判存在用「目录里有 package.json」而不是「目录存在」：node_modules 里同名
+ * 空目录（安装中途失败留下的）不该被当成可用源码。
+ * @param {{ pluginsDir?: string|null, nodeModulesDir?: string|null, packageName: string }} opts
+ * @returns {string}
+ */
+function resolvePluginSrcDir({ pluginsDir, nodeModulesDir, packageName }) {
+  const candidates = [];
+  if (pluginsDir) candidates.push(path.join(pluginsDir, packageName));
+  if (nodeModulesDir) candidates.push(path.join(nodeModulesDir, packageName));
+  for (const dir of candidates) {
+    if (fs.existsSync(path.join(dir, 'package.json'))) return dir;
+  }
+  throw new Error(`未找到插件源码: ${packageName}（找过 ${candidates.join(' ; ') || '（无候选位置）'}）`);
+}
+
+/**
+ * 「以 git 依赖 vendor 进来的插件」的包名列表 —— 联调 / 发版闸门 / 打包共用的那份名单。
+ *
+ * 判据是**清单与 dependencies 的交集**，不是「dependencies 的全部」。后者是个隐式
+ * 约定：现在根 dependencies 里恰好只有插件，脚本才凑巧对；哪天加一个真正的生产依赖，
+ * link-plugins 就会跑去 `../<那个包名>` 找工作副本、verify-plugin-pins 会要求它是
+ * git 依赖——都是莫名其妙的失败。
+ *
+ * @param {string} rootDir 本仓库根目录
+ * @returns {string[]}
+ */
+function vendoredPluginNames(rootDir) {
+  const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+  const deps = pkg.dependencies ?? {};
+  return loadProfilePluginManifest(path.join(rootDir, 'plugins'))
+    .map((plugin) => plugin.packageName)
+    .filter((name) => name in deps);
+}
+
 module.exports = {
+  resolvePluginSrcDir,
+  vendoredPluginNames,
   profileBundleEntryIds,
   entryIdsForPackage,
   planProfileCleanup,

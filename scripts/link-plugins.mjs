@@ -1,29 +1,47 @@
 // 在「钉 tag 的 git 依赖」与「指向同级工作副本的链接」之间切换插件源码。
 //
-//   node scripts/link-plugins.mjs        联调模式：node_modules/<插件> → ../<插件>
+//   node scripts/link-plugins.mjs        联调模式
 //   node scripts/link-plugins.mjs --off  恢复：删链接 + npm install 拉回钉住的版本
 //   node scripts/link-plugins.mjs --status  只看当前状态
 //
+// **要链的是两处**，缺一处联调就是半残的：
+//
+//   1) `node_modules/<插件>` → `../<仓库>`  —— 「源码从哪来」。打包时
+//      pack-profile-plugins 的 `npm pack` 打的是这里，HTTP 基线测试读的也是这里。
+//   2) `<DSH_HOME>/profiles/web/node_modules/<插件>` → `../<仓库>` —— 「跑的是哪份」。
+//      插件迁到 profile 层（A1）之后，**真正被内核 import 的是 profile 里那份**，
+//      它由 pnpm 从 tgz 装成一份独立拷贝，跟 node_modules 里那份没有任何关系。
+//      只链第 1 处的话，改完代码什么都不会变 —— 这是迁移后最容易踩的一脚。
+//
+// 链上第 2 处之后，联调手感和迁移前一样甚至更好：改 client.js 内核的 HMR 立刻推给
+// 浏览器（连注入的 <style> 都会重挂），改 index.js 重启内核即可，**没有任何拷贝
+// 或重装步骤**。这也是为什么迁到 A1 之后 install-plugin 那套「拷进内核」可以整个
+// 删掉：它存在的唯一理由就是把源码搬到内核能 import 到的地方，而现在插件本来就
+// 住在那儿。
 // 为什么不用 `npm link` 也不用 `file:` 依赖：
 //   - `npm link` 要在全局 npm 前缀里注册一份，污染的是机器级状态，而且和我们
-//     「全局 dsh 已经被 install-plugin 写过一遍」的现状叠在一起更难说清；
+//     和 DSH_HOME 里那份 profile 叠在一起更难说清；
 //   - 改成 `file:` 依赖会动 package.json 与 lockfile，而那两个文件是**发版凭据**
 //     ——它们必须始终写着钉住的 tag，不能因为某次联调被改脏、更不能被误提交。
 // 所以这里直接换 node_modules 里那一个目录：package.json 保持不动，pin 永远是权威。
 //
 // Windows 上用 junction 而不是 symlink：目录 junction 不需要管理员权限，
-// symlink 默认要（除非开了开发者模式）。install-plugin / pack-plugins 两处
-// cpSync 都带 dereference，跟着链接拷实体，两种模式的产物一致。
+// symlink 默认要（除非开了开发者模式）。`npm pack` 跟着 junction 读实体内容，
+// 所以两种模式打出来的 tgz 结构一致。
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { vendoredPluginNames } from '../src/shared/plugin-install.js';
+import { vendoredPluginNames } from '../src/shared/profile-plugins.js';
+import { profileDir } from '../src/main/profile-plugins-installer.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const nodeModules = join(root, 'node_modules');
 const workspace = resolve(root, '..');
+// profile 里的 node_modules —— 内核真正 import 的地方。开发态 DSH_HOME 默认是
+// ~/.dsh；`npm start` 不覆盖它，所以这里和应用跑起来看到的是同一个目录。
+const profileNodeModules = join(profileDir(), 'node_modules');
 
 /** 包名 → 同级工作副本的目录名。`@scope/x` 的仓库目录是 `x`。 */
 function repoDirOf(packageName) {
@@ -41,26 +59,55 @@ const mode = process.argv.includes('--off') ? 'off'
  */
 const vendoredPlugins = () => vendoredPluginNames(root);
 
-/** @returns {'linked'|'pinned'|'missing'} */
-function stateOf(name) {
-  const dir = join(nodeModules, name);
+/**
+ * @param {string} baseDir 一个 node_modules 目录
+ * @returns {'linked'|'pinned'|'missing'}
+ */
+function stateIn(baseDir, name) {
+  const dir = join(baseDir, name);
   if (!existsSync(dir)) return 'missing';
   return lstatSync(dir).isSymbolicLink() ? 'linked' : 'pinned';
 }
 
+const stateOf = (name) => stateIn(nodeModules, name);
+
 function report() {
+  const label = { linked: '联调', pinned: '钉 tag', missing: '缺失' };
   for (const name of vendoredPlugins()) {
-    const state = stateOf(name);
-    const label = { linked: '联调（→ ../' + repoDirOf(name) + '）', pinned: '钉 tag', missing: '缺失' }[state];
-    console.log(`  ${name.padEnd(22)} ${label}`);
+    // 两处分别报：只链上一处是**能跑但行为不符合预期**的状态（改了没反应，或者
+    // 改了有反应但打包不含），比两处都没链更难自己发现。
+    console.log(`  ${name.padEnd(24)} 源码 ${label[stateOf(name)].padEnd(6)} 运行 ${label[stateIn(profileNodeModules, name)]}`);
   }
 }
 
 /**
  * `dist` 解除了联调却没恢复的标记。`dist.mjs` 的恢复走 `try/finally`，而 finally
  * **在强杀（Ctrl-C 两下 / taskkill）时不会执行** —— 那种情况下联调被静默关掉，
- * 人以为还开着，改完插件跑 install-plugin 却怎么都不生效。这里替它把话说出来。
+ * 人以为还开着，改完插件却怎么都不生效。这里替它把话说出来。
  */
+/**
+ * 把这些包从播种账本里删掉，逼下次启动重新装。
+ *
+ * 不这么做的话对账会看到「账本说装过 0.5.0、profile 里也确实是 0.5.0」（junction
+ * 刚被删掉，但账本还在）而直接跳过，结果 profile 里少了这个包、内核 import 失败
+ * 秒退。账本读不出来就当没有 —— 这条路是尽力而为，失败最多是多装一次。
+ * @param {string[]} names
+ */
+function dropSeedEntries(names) {
+  // userData 目录名跟 package.json 的 name 走（Electron 的默认规则）。
+  const seedPath = join(process.env.APPDATA ?? join(process.env.HOME ?? '', '.config'),
+    'deepseek-desktop', 'profile-plugins-seeded.json');
+  if (!existsSync(seedPath)) return;
+  try {
+    const seeded = JSON.parse(readFileSync(seedPath, 'utf8'));
+    for (const name of names) delete seeded[name];
+    writeFileSync(seedPath, `${JSON.stringify(seeded, null, 2)}
+`, 'utf8');
+  } catch (error) {
+    console.warn(`[link-plugins] 播种账本更新失败（下次启动可能不会自动装回）：${error?.message ?? error}`);
+  }
+}
+
 function warnStaleUnlink() {
   const marker = join(root, '.dist-unlinked');
   if (!existsSync(marker)) return;
@@ -95,10 +142,19 @@ if (mode === 'on') {
       failed = true;
       continue;
     }
-    const dest = join(nodeModules, name);
-    rmSync(dest, { recursive: true, force: true });
-    symlinkSync(target, dest, 'junction');
-    console.log(`[link-plugins] ${name} → ${target}`);
+    for (const base of [nodeModules, profileNodeModules]) {
+      // profile 里没装过这个插件就跳过，不要凭空造一个：profile 的
+      // `dsh.profile.bundles` 里没有对应登记，链了也不会被加载，反而让
+      // --status 显示成「已联调」而实际没生效。先把应用跑一次让它装进去。
+      if (base === profileNodeModules && stateIn(base, name) === 'missing') {
+        console.warn(`[link-plugins] ${name}：profile 里还没装过，跳过运行侧链接（先跑一次 npm start）`);
+        continue;
+      }
+      const dest = join(base, name);
+      rmSync(dest, { recursive: true, force: true });
+      symlinkSync(target, dest, 'junction');
+      console.log(`[link-plugins] ${dest} → ${target}`);
+    }
   }
   // 联调恢复到位，`dist` 那次没善终的标记可以销了。
   rmSync(join(root, '.dist-unlinked'), { force: true });
@@ -107,11 +163,24 @@ if (mode === 'on') {
   if (failed) process.exit(1);
 } else {
   let removed = 0;
+  const relinkProfile = [];
   for (const name of vendoredPlugins()) {
+    // profile 侧先摘：留着它就等于「打包用钉住的版本、跑的还是工作副本」，
+    // 而这条歧路恰恰是 unlink 想消除的。
+    if (stateIn(profileNodeModules, name) === 'linked') {
+      rmSync(join(profileNodeModules, name), { recursive: true, force: true });
+      relinkProfile.push(name);
+    }
     if (stateOf(name) !== 'linked') continue;
     rmSync(join(nodeModules, name), { recursive: true, force: true });
     removed += 1;
     console.log(`[link-plugins] 已解除 ${name}`);
+  }
+  if (relinkProfile.length > 0) {
+    // 只删不补：profile 里那份由启动时的对账负责装回来（seeded 账本记的版本和
+    // 随包 tgz 一致时它认为「已装」，所以这里要顺手把账本里那几条抹掉）。
+    dropSeedEntries(relinkProfile);
+    console.log(`[link-plugins] 已摘掉 profile 里的链接：${relinkProfile.join(', ')}（下次启动会按随包版本装回来）`);
   }
   if (removed === 0) {
     console.log('[link-plugins] 没有处于联调模式的插件，无需处理。');

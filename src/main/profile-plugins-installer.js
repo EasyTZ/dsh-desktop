@@ -151,7 +151,7 @@ function runDshPluginAdd({ nodeExe, binJs, cwd, env, specs }) {
  * @param {string} options.pnpmCliPath 随包分发的 pnpm.cjs
  * @param {string} options.shimDir 垫片目录（可写，通常在 userData 下）
  * @param {string} options.seedStatePath 播种账本路径（可写，userData 下）
- * @param {import('../shared/plugin-install').Logger} options.logger
+ * @param {{ log(msg: string): void, warn(msg: string): void }} options.logger
  * @param {NodeJS.ProcessEnv} [options.env]
  * @returns {Promise<{ installed: string[], failed: string[], shimDir: string|null }>}
  */
@@ -159,6 +159,7 @@ async function reconcileProfilePlugins(options) {
   const {
     profileDistDir, nodeExe, binJs, pnpmCliPath, shimDir, seedStatePath, logger, env = process.env,
   } = options;
+  /** @type {{ installed: string[], failed: string[], shimDir: string|null }} */
   const result = { installed: [], failed: [], shimDir: null };
 
   let desired = [];

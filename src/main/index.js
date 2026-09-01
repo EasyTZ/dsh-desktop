@@ -45,25 +45,25 @@ if (!gotLock) {
   const BUILTIN_KERNEL_DIR = app.isPackaged
     ? path.join(process.resourcesPath, 'kernel')
     : path.join(__dirname, '..', '..', 'kernel');
-  const PLUGINS_DIR = app.isPackaged
+  // 随包分发的插件产物根（打包态是 extraResources 里的 plugins/，开发态是仓库的
+  // plugins-dist/）。里面现在只有 profile/ 一层 —— 见 PROFILE_DIST_DIR。
+  const PLUGINS_DIST_ROOT = app.isPackaged
     ? path.join(process.resourcesPath, 'plugins')
-    : path.join(__dirname, '..', '..', 'plugins');
+    : path.join(__dirname, '..', '..', 'plugins-dist');
   const USER_KERNEL_DIR = path.join(app.getPath('userData'), 'kernel');
   const UPDATER_CONFIG_PATH = path.join(app.getPath('userData'), 'updater.json');
-  // 插件激活 overlay：由 plugins.json 生成，启动时经 `--patch` 交给内核。
-  // 放 userData 而不是 resources：打包态 resources 只读，且内容随清单变化。
+  // 插件停用 overlay（patch 层栈第 4 层）：启动时经 `--patch` 交给内核。插件迁到
+  // profile 层之后它**只用来停用条目**，不再负责挂载任何东西 —— 常态下是一份空的
+  // `[]`。放 userData 而不是 resources：打包态 resources 只读，且内容随开关变化。
   const ACTIVATION_PATCH_PATH = path.join(app.getPath('userData'), 'desktop.patch.yml');
-  // 插件开关状态（插件管理面板写、启动路径读）：plugins.json 是仓库里的文件，
-  // 打进包后只读，用户的实际开关必须落在可写的 userData 下。
+  // 插件开关状态：插件市场的 node 半写、启动路径读。必须落在可写的 userData 下。
   const PLUGIN_STATE_PATH = path.join(app.getPath('userData'), 'plugin-state.json');
 
   // 给内核进程注入桌面版专属路径：写进 process.env 一次，之后所有内核子进程
   // （DshService 启动的、kernel-updater 自检的）自动继承——比在每个 spawn 点
-  // 各拼一份可靠，将来新增 spawn 点也不会漏。插件管理面板的 node 半只认这些
-  // 变量，绝不硬编码 %APPDATA% 之类的机器路径。
-  process.env.DSH_DESKTOP_PLUGINS_DIR = PLUGINS_DIR;
+  // 各拼一份可靠，将来新增 spawn 点也不会漏。插件市场的 node 半只认这些变量，
+  // 绝不硬编码 %APPDATA% 之类的机器路径。
   process.env.DSH_DESKTOP_PLUGIN_STATE = PLUGIN_STATE_PATH;
-  process.env.DSH_DESKTOP_ACTIVATION_PATCH = ACTIVATION_PATCH_PATH;
 
   const PNPM_CLI_PATH = path.join(BUILTIN_KERNEL_DIR, 'pnpm', 'bin', 'pnpm.cjs');
   // pnpm 的 PATH 垫片：让内核进程里的 `dsh plugin add`（市场的一键安装、以及启动
@@ -76,9 +76,7 @@ if (!gotLock) {
   // profile 层插件的产物（tgz + index.json）。打包态跟着 plugins 资源走；开发态在
   // 仓库的 plugins-dist/ 下 —— 那是 `npm run pack-profile-plugins` 的输出，没跑过就
   // 没有这个目录，对账会安静跳过，正是开发时想要的行为。
-  const PROFILE_DIST_DIR = app.isPackaged
-    ? path.join(PLUGINS_DIR, 'profile')
-    : path.join(__dirname, '..', '..', 'plugins-dist', 'profile');
+  const PROFILE_DIST_DIR = path.join(PLUGINS_DIST_ROOT, 'profile');
   // 插件市场要能列出「随应用分发的插件」并把被卸载的那些装回来 —— 装回来用的是这个
   // 目录里的 tgz，所以位置得告诉它。不注入的话，用户卸掉一个自带插件就再也装不回来了
   // （npm 上还没发，市场里搜不到），那是一扇单向门。
@@ -289,7 +287,6 @@ if (!gotLock) {
     const service = new DshService({
       logger: console,
       userKernelDir: USER_KERNEL_DIR,
-      pluginsDir: PLUGINS_DIR,
       activationPatchPath: ACTIVATION_PATCH_PATH,
       pluginStatePath: PLUGIN_STATE_PATH,
       safeMode,
@@ -410,9 +407,9 @@ if (!gotLock) {
       logger: console,
       userKernelDir: USER_KERNEL_DIR,
       builtinKernelDir: BUILTIN_KERNEL_DIR,
-      pluginsDir: PLUGINS_DIR,
       configPath: UPDATER_CONFIG_PATH,
       pnpmCliPath: PNPM_CLI_PATH,
+      profileDistDir: PROFILE_DIST_DIR,
       builtinNodeExe: BUILTIN_NODE_EXE,
       pnpmStoreDir: PNPM_STORE_DIR,
       activationPatchPath: ACTIVATION_PATCH_PATH,

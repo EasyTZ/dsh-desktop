@@ -8,8 +8,7 @@ const { app } = require('electron');
 const { resolvePackagedKernel } = require('../shared/kernel-paths');
 const { findFreePort } = require('../shared/net');
 const { findDshBinJsAsync } = require('../shared/dsh-locate');
-const { loadPluginManifest, writeActivationPatch, writeSafeModePatch } = require('../shared/plugin-install');
-const { loadPluginState } = require('../shared/plugin-state');
+const { loadPluginState, disabledEntryIds, writeActivationPatch } = require('../shared/activation-patch');
 const { isPortBindFailure, firstBindErrorLine } = require('../shared/error-detail');
 const { profileBundleEntryIds } = require('../shared/profile-plugins');
 const { withPnpmOnPath, profileDir } = require('./profile-plugins-installer');
@@ -23,30 +22,6 @@ const URL_LINE_RE = /dsh web:\s+(https?:\/\/\S+)/;
  * 安全模式的意义是「把出问题的插件关掉」，把那个能关插件的东西也关了就等于没有安全模式。
  */
 const RECOVERY_PACKAGES = ['@easytz/dsh-market'];
-
-/**
- * 用户在插件市场里「停用」的 profile 层插件 → 要写进 overlay 的 disable 条目。
- *
- * 「停用」和「卸载」是两件事，用户两个都要：停用保留安装、随时能开回来（适合暂时
- * 排查问题），卸载是真的删掉。profile 层插件自己插自己的第 2 层条目，我们插不了也
- * 删不掉，只能从第 4 层压一条 `disabled: true`。
- *
- * 状态存在 `plugin-state.json`（entryId → boolean，`false` = 停用），和 A2 插件的
- * 开关**共用同一个文件与同一种形状**：那本来就是同一个概念——用户对某个 loader 条目
- * 的开关意愿，只是两层的实现手段不同。
- *
- * **只对 profile 里真实存在的 entry id 生成 disable**：dsh 自己给遥测生成 disable
- * 补丁时也先查了 `hasRow`，说明 patch 一个不存在的 id 不是安全操作。用户卸载了一个
- * 曾经停用过的插件后，状态文件里那条 `false` 就是「不存在的 id」——不过滤会在下次
- * 启动时炸在所有人脸上。
- */
-function disabledProfileEntryIds(userState) {
-  const wanted = new Set(
-    Object.entries(userState ?? {}).filter(([, on]) => on === false).map(([id]) => id),
-  );
-  if (wanted.size === 0) return [];
-  return profileBundleEntryIds(profileDir()).filter((id) => wanted.has(id));
-}
 
 // 端口绑定失败的换端口重试上限。三次都撞上说明不是运气问题（多半是安全软件拦截
 // 或系统保留了很大一段端口），继续试没有意义，交给上层报错。
@@ -73,7 +48,6 @@ class DshService extends EventEmitter {
     super();
     this.logger = opts.logger ?? console;
     this.userKernelDir = opts.userKernelDir ?? null;
-    this.pluginsDir = opts.pluginsDir ?? null;
     this.activationPatchPath = opts.activationPatchPath ?? null;
     this.pluginStatePath = opts.pluginStatePath ?? null;
     // 安全模式：只加载清单里标了 safeMode 的插件（逃生舱，见 #prepareActivationPatch）。
@@ -266,38 +240,35 @@ class DshService extends EventEmitter {
   #stderrTail = '';
 
   /**
-   * 备好激活 overlay，返回它的路径；缺少插件目录或清单读不出来时返回 null
-   * （外壳照常启动，只是插件不生效 —— 好过整个应用起不来）。
+   * 备好 overlay，返回路径；写不出来时返回 null（外壳照常启动，只是停用不生效——
+   * 好过整个应用起不来）。
    *
-   * 用户在插件管理面板里关掉的插件不生成 `- insert:` 条目：状态文件在每次
-   * 启动时读一次，所以「切换后重启内核生效」的重启路径走的就是这里。
+   * overlay 现在只做一件事：**按用户意愿停用条目**。插件全在 profile 层，是自己
+   * insert 自己的第 2 层条目，我们插不了也删不掉，只能从第 4 层压 `disabled: true`。
    *
-   * 安全模式（`this.safeMode`）下只写清单里标了 `safeMode: true` 的插件，且
-   * **不读用户状态** —— 那是插件把内核搞崩之后的逃生舱，见 plugin-state.js 的
-   * `safeModePlugins`。
+   * 状态每次启动读一次，所以「改完开关重启生效」走的就是这条路。
+   *
+   * **只对 profile 里真实存在的 entry id 生成 disable**：dsh 自己给遥测生成 disable
+   * 补丁时也先查了 `hasRow`，说明 patch 一个不存在的 id 不是安全操作。用户卸载一个
+   * 曾经停用过的插件之后，状态文件里那条 `false` 就是「不存在的 id」——不过滤会在
+   * 下次启动时炸在所有人脸上。
+   *
+   * 安全模式**不读用户状态**：那正是「用户状态可能有问题」时用的逃生舱，再过一遍
+   * 开关只可能把恢复入口也滤掉。它关掉市场以外的全部 profile 插件。
    * @returns {string|null}
    */
   #prepareActivationPatch() {
-    if (!this.pluginsDir || !this.activationPatchPath) return null;
+    if (!this.activationPatchPath) return null;
     try {
-      const plugins = loadPluginManifest(this.pluginsDir);
+      const all = profileBundleEntryIds(profileDir(), { exclude: RECOVERY_PACKAGES });
       if (this.safeMode) {
-        // profile 层（A1）插件也要一并关掉，否则安全模式只挡得住随包分发的那批，
-        // 而用户从市场装的插件——恰恰是最可能出问题、也最需要被关掉的那些——照样
-        // 加载。**唯独放过插件市场自己**：它是并入 UI 之后唯一的恢复入口，把它关了
-        // 安全模式就变成一个没有任何按钮可点的界面。
-        const disable = profileBundleEntryIds(profileDir(), { exclude: RECOVERY_PACKAGES });
-        if (disable.length > 0) {
-          this.logger.log(`[dsh] 安全模式：额外关闭 profile 层插件 ${disable.join(', ')}`);
-        }
-        return writeSafeModePatch(this.activationPatchPath, plugins, disable);
+        if (all.length > 0) this.logger.log(`[dsh] 安全模式：停用 ${all.join(', ')}`);
+        return writeActivationPatch(this.activationPatchPath, all);
       }
-      const userState = loadPluginState(this.pluginStatePath);
-      return writeActivationPatch(
-        this.activationPatchPath, plugins, userState, disabledProfileEntryIds(userState),
-      );
+      const wanted = new Set(disabledEntryIds(loadPluginState(this.pluginStatePath)));
+      return writeActivationPatch(this.activationPatchPath, all.filter((id) => wanted.has(id)));
     } catch (error) {
-      this.logger.warn('[dsh] 生成插件激活 overlay 失败，插件将不生效:', error?.message ?? error);
+      this.logger.warn('[dsh] 生成 overlay 失败，插件停用状态本次不生效:', error?.message ?? error);
       return null;
     }
   }

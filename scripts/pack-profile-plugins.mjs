@@ -16,8 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadProfilePluginManifest } from '../src/shared/profile-plugins.js';
-import { resolvePluginSrcDir } from '../src/shared/plugin-install.js';
+import { loadProfilePluginManifest, resolvePluginSrcDir } from '../src/shared/profile-plugins.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pluginsDir = join(root, 'plugins');

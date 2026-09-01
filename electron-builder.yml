@@ -19,9 +19,8 @@ extraResources:
     to: kernel
     filter:
       - "**/*"
-  # 插件源码 + 清单：热更新新内核后，据此把自定义插件重装进新版内核。
-  # 拆仓后源码分散在 plugins/（桌面专属）与 node_modules/（git 依赖）两处，
-  # 由 scripts/pack-plugins.mjs 按 plugins.json 摊平到 plugins-dist/ 再进包。
+  # profile 层插件的 tgz + 索引：首启（以及用户卸载后想装回来）时离线安装的来源。
+  # 由 scripts/pack-profile-plugins.mjs 按 profile-plugins.json `npm pack` 而成。
   - from: plugins-dist
     to: plugins
     filter:

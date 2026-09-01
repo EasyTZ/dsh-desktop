@@ -4,7 +4,8 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { loadPluginManifest, resolvePluginSrcDir } = require('../src/shared/plugin-install');
+const { resolvePluginSrcDir } = require('../src/shared/profile-plugins');
+const { loadProfilePluginManifest } = require('../src/shared/profile-plugins');
 
 // 插件的 HTTP 路由安全基线，逐个插件核一遍。
 //
@@ -36,7 +37,10 @@ const HINT = '（非联调态报红 = 钉住的 tag 还不含这条防线，需�
  * 解析出每个插件的两半入口源码（联调态下 node_modules 里是指向工作副本的链接）。
  */
 function pluginEntries() {
-  const plugins = loadPluginManifest(path.join(ROOT, 'plugins'));
+  // 读 **profile 清单**（A1）。插件迁到 profile 层之后 plugins.json 就空了，而这里
+  // 原先读的正是它——六条断言遍历 0 个对象、全部空转通过，等于这道防线安静地消失了。
+  // 「测试还绿着」和「测试还在测东西」是两回事，这就是那个区别的实例。
+  const plugins = loadProfilePluginManifest(path.join(ROOT, 'plugins'));
   return plugins.map((plugin) => {
     const dir = resolvePluginSrcDir({
       pluginsDir: path.join(ROOT, 'plugins'),
