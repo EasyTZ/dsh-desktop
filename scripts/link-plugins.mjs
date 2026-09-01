@@ -42,6 +42,10 @@ const workspace = resolve(root, '..');
 // profile 里的 node_modules —— 内核真正 import 的地方。开发态 DSH_HOME 默认是
 // ~/.dsh；`npm start` 不覆盖它，所以这里和应用跑起来看到的是同一个目录。
 const profileNodeModules = join(profileDir(), 'node_modules');
+// `profiles/<name>/` 的上一层——dsh 的 pnpm 工作区根，各 profile 共用的框架包
+// （schemastery、cordis、dsh-credentials…）hoist 在这里，不在 profileNodeModules
+// 里。见下面 ensurePeerAccess 的注释。
+const frameworkNodeModules = join(dirname(profileDir()), 'node_modules');
 
 /** 包名 → 同级工作副本的目录名。`@scope/x` 的仓库目录是 `x`。 */
 function repoDirOf(packageName) {
@@ -108,6 +112,46 @@ function dropSeedEntries(names) {
   }
 }
 
+/**
+ * 让插件仓库自己能 `import` 到 schemastery / dsh-credentials 这类框架包。
+ *
+ * **真实事故**：改完插件市场的卡片 UI 后开另外四个插件联调，`@easytz/dsh-ui-balance`
+ * 直接把内核崩了——`Cannot find package '@deepseek-ai/schemastery' imported from
+ * .../dsh-ui-balance/lib/index.js`。插件仓库刻意零依赖，这些包只在 `peerDependencies`
+ * 里声明，真正由内核/profile 提供；而 Node 的 ESM 解析按**文件的物理路径**网上找
+ * `node_modules`——非联调时物理路径就在 `profiles/web/node_modules/@easytz/...` 下面，
+ * 网上第一层就是 `frameworkNodeModules`（`profiles/node_modules`，schemastery、
+ * cordis、dsh-credentials 这些框架包实际 hoist 的地方），天然够得到；联调把它换成
+ * 指向同级工作副本的 junction 后，物理路径变成仓库目录本身，往上是 `workspace`、
+ * `D:\`，够不到 profile 那棵树，于是任何在模块顶层 `import` 了框架包的插件
+ * （目前只有用了 Config 的 dsh-ui-balance、dsh-market）联调时就会直接崩内核。
+ *
+ * 在仓库里补一个指向 `frameworkNodeModules` 的 `node_modules` junction 就够了：
+ * 不管这条依赖链多深（schemastery、dsh-credentials 还会各自再 import cordis 等），
+ * 只要它们本身也在 `frameworkNodeModules` 树里，Node 从那一步起就是在真实路径上
+ * 走，会自己继续解析下去，不需要为每一层再补一个 junction。也不用在每个插件仓库
+ * 各自维护一份 devDependencies 去追这条依赖链——追不完，且和 profile 里实际提供的
+ * 版本对不上是双份维护。
+ *
+ * **绝不覆盖仓库自己真实的 node_modules**：万一某个插件仓库出于别的原因（比如跑
+ * 自己的单测）真的装了本地依赖，这里应该什么都不做，而不是把它删了换成 junction。
+ */
+function ensurePeerAccess(repoDir) {
+  const dest = join(repoDir, 'node_modules');
+  if (existsSync(dest) && !lstatSync(dest).isSymbolicLink()) return; // 真实目录，不碰
+  if (!existsSync(frameworkNodeModules)) return; // profile 还没起过，等下次再补
+  rmSync(dest, { recursive: true, force: true });
+  symlinkSync(frameworkNodeModules, dest, 'junction');
+}
+
+/** ensurePeerAccess 的另一半：联调关掉时把补的这个 junction 也收掉，别留着。 */
+function clearPeerAccess(repoDir) {
+  const dest = join(repoDir, 'node_modules');
+  if (existsSync(dest) && lstatSync(dest).isSymbolicLink()) {
+    rmSync(dest, { recursive: true, force: true });
+  }
+}
+
 function warnStaleUnlink() {
   const marker = join(root, '.dist-unlinked');
   if (!existsSync(marker)) return;
@@ -155,6 +199,7 @@ if (mode === 'on') {
       symlinkSync(target, dest, 'junction');
       console.log(`[link-plugins] ${dest} → ${target}`);
     }
+    ensurePeerAccess(target);
   }
   // 联调恢复到位，`dist` 那次没善终的标记可以销了。
   rmSync(join(root, '.dist-unlinked'), { force: true });
@@ -165,6 +210,9 @@ if (mode === 'on') {
   let removed = 0;
   const relinkProfile = [];
   for (const name of vendoredPlugins()) {
+    // ensurePeerAccess 补的那个 junction 也要收掉，不然仓库目录里凭空多一个
+    // 指向 profile 框架包的 node_modules，跟"联调关掉了"这件事对不上。
+    clearPeerAccess(join(workspace, repoDirOf(name)));
     // profile 侧先摘：留着它就等于「打包用钉住的版本、跑的还是工作副本」，
     // 而这条歧路恰恰是 unlink 想消除的。
     if (stateIn(profileNodeModules, name) === 'linked') {
