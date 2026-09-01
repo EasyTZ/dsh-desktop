@@ -223,24 +223,50 @@ function sweepMirror({ homeDir, keep, logger }) {
  * 把清单里已经指不到东西的 `file:` 依赖改指到镜像。
  *
  * 为什么还要单独有这一步：镜像只保证**今后**装的都落在 dsh home，用户机器上早就
- * 记着的那些老路径（指向应用目录）不会自己变。它们一旦失效，pnpm 连
- * `dsh plugin add` 都跑不起来 —— 「下次启动自动装回来」那条自愈路径本身被堵死了，
- * 只能在跑 pnpm **之前**先把清单改对。
+ * 记着的那些老路径（指向应用目录，或者版本已经翻篇的旧镜像路径）不会自己变。它们
+ * 一旦失效，pnpm 连 `dsh plugin add` 都跑不起来 —— 「下次启动自动装回来」那条
+ * 自愈路径本身被堵死了，只能在跑 pnpm **之前**先把清单改对。
  *
- * 只改能在镜像里找到同名文件的那些；找不到的原样留着，交给后面的步骤去报错，而
- * 不是在这儿擅自删掉一个可能还在正常工作的插件。
+ * **优先按包名去当前随包索引里找替代，而不是只按文件名**：真实故障复盘过一次——
+ * 版本号一变（比如市场从 1.0.1 升到 1.0.4），`materializeBundledDist` 早把镜像里
+ * 那份旧文件名（`xxx-1.0.1.tgz`）扫掉了（见 `sweepMirror`，只留当前版本），此后
+ * 按文件名匹配永远找不到替代，悬空依赖也就永远修不好——而它一天不修好，profile 里
+ * **任何**安装/卸载操作都会失败，因为 pnpm 解析的是全部依赖树，不是只解析这次
+ * 要动的那个。包名对当前索引来说是稳定的（版本号不管怎么变，包名不变），按包名
+ * 找到的就是「这个包现在应该指向哪个 tarball」，天然涵盖了版本升级的情形。
+ * 文件名匹配留作兜底（索引读不出来，或者这个包不在当前索引里）。
  *
+ * 只改能找到替代的那些；找不到的原样留着，交给后面的步骤去报错，而不是在这儿
+ * 擅自删掉一个可能还在正常工作的插件。
+ *
+ * @param {object} options
+ * @param {string} options.dir profile 的目录（package.json 所在处）
+ * @param {string} [options.profileDistDir] 当前随包索引所在目录，用来按包名查现在该指哪个
+ *   tarball；可选——不给（或读不出来）就退化成纯按文件名匹配。
+ * @param {string|null} options.mirrorDir 镜像目录；没有镜像时什么都不做
+ * @param {{ log(msg: string): void, warn(msg: string): void }} options.logger
  * @returns {string[]} 被改过的包名
  */
-function repairDanglingFileSpecs({ dir, mirrorDir, logger }) {
+function repairDanglingFileSpecs({ dir, profileDistDir, mirrorDir, logger }) {
   if (!mirrorDir) return [];
+  let tarballByName = new Map();
+  if (profileDistDir) {
+    try {
+      tarballByName = new Map(loadProfilePluginIndex(profileDistDir).map((e) => [e.packageName, e.tarball]));
+    } catch { /* 索引读不出来就退化成纯按文件名匹配 */ }
+  }
   const manifestPath = path.join(dir, 'package.json');
   try {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
     const { manifest: next, repaired } = planFileSpecRepair(
       manifest,
       (target) => fs.existsSync(target),
-      (basename) => {
+      (basename, name) => {
+        const byName = tarballByName.get(name);
+        if (byName) {
+          const candidate = path.join(mirrorDir, byName);
+          if (fs.existsSync(candidate)) return candidate.split(path.sep).join('/');
+        }
         const candidate = path.join(mirrorDir, basename);
         return fs.existsSync(candidate) ? candidate.split(path.sep).join('/') : null;
       },
@@ -327,7 +353,7 @@ async function reconcileProfilePlugins(options) {
   const homeDir0 = resolveDshHome(env);
   const dir0 = profileDir(env);
   result.bundledDir = materializeBundledDist({ profileDistDir, homeDir: homeDir0, logger });
-  repairDanglingFileSpecs({ dir: dir0, mirrorDir: result.bundledDir, logger });
+  repairDanglingFileSpecs({ dir: dir0, profileDistDir, mirrorDir: result.bundledDir, logger });
   pruneUnresolvableBundles({ dir: dir0, logger });
 
   let desired = [];

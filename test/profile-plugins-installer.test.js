@@ -225,6 +225,36 @@ test('repairDanglingFileSpecs: 没有镜像时什么都不做', () => {
   assert.deepStrictEqual(repairDanglingFileSpecs({ dir: tmpdir(), mirrorDir: null, logger: quiet }), []);
 });
 
+test('repairDanglingFileSpecs: 版本翻篇后镜像里已经没有旧文件名了，得按包名找当前那份', () => {
+  // 复刻真实故障：市场从 1.0.1 升到 1.0.4，sweepMirror 早把镜像里 1.0.1 那份删了
+  // （只留当前版本），清单里还记着老版本路径。纯按文件名匹配在这种情形下永远找不到
+  // 替代——这条依赖就永远悬空，进而拖垮 profile 里所有 pnpm 操作（install/uninstall
+  // 全部失败，包管理器执行失败）。按包名去当前随包索引里找就不受版本号变化影响。
+  const home = tmpdir();
+  const mirror = path.join(home, '.dsdesktop', 'bundled');
+  fs.mkdirSync(mirror, { recursive: true });
+  fs.writeFileSync(path.join(mirror, 'easytz-dsh-market-1.0.4.tgz'), 'x'); // 只有新版本，没有 1.0.1
+  const dist = writeDist(tmpdir(), [
+    { packageName: '@easytz/dsh-market', version: '1.0.4', tarball: 'easytz-dsh-market-1.0.4.tgz', required: true },
+  ]);
+
+  const dir = tmpdir();
+  writeManifest(dir, {
+    dependencies: { '@easytz/dsh-market': 'file:D:/gone/.dsdesktop/bundled/easytz-dsh-market-1.0.1.tgz' },
+    dsh: { profile: { bundles: ['@easytz/dsh-market'] } },
+  });
+
+  assert.deepStrictEqual(
+    repairDanglingFileSpecs({ dir, profileDistDir: dist, mirrorDir: mirror, logger: quiet }),
+    ['@easytz/dsh-market'],
+  );
+  const next = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+  assert.strictEqual(
+    next.dependencies['@easytz/dsh-market'],
+    `file:${mirror.split(path.sep).join('/')}/easytz-dsh-market-1.0.4.tgz`,
+  );
+});
+
 test('reconcileProfilePlugins: 三步自愈都要接上，且排在读随包索引的早退之前', async () => {
   // 这条测的是**接线**，不是那三个函数本身。它们哪一个没接上（或者被挪到早退之后），
   // 用户机器上就还是会出现「插件装不上也卸不掉」或者「内核起不来」——而单测全绿。

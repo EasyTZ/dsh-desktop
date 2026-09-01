@@ -4,6 +4,7 @@ dist/
 _smoke/
 release/
 *.log
+.xueqiu-ui-state.json
 kernel-dist/
 plugins-dist/
 

@@ -367,13 +367,18 @@ function pruneBundles(manifest, names) {
  * 里只要留着一条指向已消失文件的 `file:`，用户装/卸任何一个插件都会失败，连
  * 「下次启动自动装回来」那条自愈路径也一起被堵死（它自己也要跑 pnpm）。
  *
- * 只按**文件名**找替代：`file:` 记的是绝对路径，路径变了但文件名（带版本号）没变，
- * 就是同一个包的同一版。找不到的原样留着 —— 在这儿擅自删掉一条依赖，等于卸掉一个
- * 可能还在正常工作的插件。
+ * 找替代的信号有两个：**包名**（优先）与**文件名**（兜底）。文件名匹配是原始设计——
+ * `file:` 记的是绝对路径，路径变了但文件名（带版本号）没变，就是同一个包的同一版。
+ * 但这个假设在**版本已经翻篇**时会落空：镜像目录只留当前版本一份拷贝（见
+ * `sweepMirror`），旧版本文件名早被扫掉了，按文件名永远找不到替代——而这恰恰是最
+ * 常见的悬空场景（应用升级带的新版本 tarball，替换了清单里还记着的旧版本路径）。
+ * 所以调用方应该优先按包名去当前的随包索引里找，找不到再退回按文件名匹配。找不到
+ * 就原样留着 —— 在这儿擅自删掉一条依赖，等于卸掉一个可能还在正常工作的插件。
  *
  * @param {any} manifest profile 的 package.json 内容
  * @param {(target: string) => boolean} exists 目标文件在不在
- * @param {(basename: string) => string|null} findReplacement 按文件名找替代路径
+ * @param {(basename: string, name: string) => string|null} findReplacement 按文件名 /
+ *   包名找替代路径（两个参数都给，调用方自己决定用哪个、按什么顺序试）
  * @returns {{ manifest: any, repaired: string[] }}
  */
 function planFileSpecRepair(manifest, exists, findReplacement) {
@@ -386,7 +391,7 @@ function planFileSpecRepair(manifest, exists, findReplacement) {
     const target = spec.slice('file:'.length);
     if (exists(target)) continue;
     const basename = target.split(/[\\/]/).pop() ?? '';
-    const replacement = findReplacement(basename);
+    const replacement = findReplacement(basename, name);
     if (replacement === null) continue;
     next[name] = `file:${replacement}`;
     repaired.push(name);
