@@ -25,7 +25,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {
   loadProfilePluginIndex, planProfileReconcile, planProfileCleanup, entryIdsForPackage,
-  installedVersionIn, loadSeedState, saveSeedState,
+  installedVersionIn, loadSeedState, saveSeedState, planBundlePrune, pruneBundles, planFileSpecRepair,
 } = require('../shared/profile-plugins');
 
 /** 单个插件的安装超时。本地 tgz 不需要下载，但 pnpm 建链接、写 lockfile 也要点时间。 */
@@ -141,6 +141,159 @@ function runDshPluginAdd({ nodeExe, binJs, cwd, env, specs }) {
   });
 }
 
+/** dsh home 里那份稳定镜像的位置。 */
+function bundledMirrorDir(homeDir) {
+  return path.join(homeDir, '.dsdesktop', 'bundled');
+}
+
+/**
+ * 把随包的 tarball 与索引整份镜像到 dsh home，返回镜像目录。
+ *
+ * **这是这个模块最要紧的一条不变式：除了这个函数，谁都不许直接引用应用目录里的
+ * tarball。**
+ *
+ * 为什么：pnpm 把 `file:` 依赖按**绝对路径**记进 profile 的 package.json，而那个
+ * 路径指向应用安装目录。应用一升级，里面的 tarball 就换成新版本的文件名（版本号
+ * 在文件名里），旧路径随之消失；应用被卸载或挪走更是直接没了。此后 profile 里
+ * **任何**一次 pnpm 操作都会失败 —— pnpm 解析的是全部依赖，不是只解析这次要动的
+ * 那个。用户看到的是「插件装不上也卸不掉」，而原因在一个跟他这次操作毫无关系的
+ * 包上；要是恰好卸到一半，残缺的清单还会让内核起不来。
+ *
+ * 真实发生过一次，而**同一个洞有三个入口**：启动播种、市场里的「装回自带插件」
+ * （它读 DSH_DESKTOP_PROFILE_DIST）、以及早就记在清单里的历史路径。逐个打补丁迟早
+ * 漏一个 —— 改成「镜像一份，下游只认镜像」，三个入口才收敛成一个。
+ *
+ * dsh home 是**用户的**目录，不随应用升级或卸载而变动。代价是每个插件多占一份
+ * tarball（几十 KB 到几百 KB），并要顺手清掉不再被引用的旧副本。
+ *
+ * 整份失败就返回 null，调用方退回应用目录 —— 那样至少不比今天更糟。
+ *
+ * @returns {string|null} 镜像目录；失败返回 null
+ */
+function materializeBundledDist({ profileDistDir, homeDir, logger }) {
+  let index;
+  try {
+    index = loadProfilePluginIndex(profileDistDir);
+  } catch (error) {
+    logger.warn(`[profile-plugins] 随包索引读不出来，镜像跳过：${error?.message ?? error}`);
+    return null;
+  }
+  if (index.length === 0) return null;
+  const dir = bundledMirrorDir(homeDir);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    for (const entry of index) {
+      const dest = path.join(dir, entry.tarball);
+      // 文件名里带版本号，同名即同内容，不必重复复制。
+      if (!fs.existsSync(dest)) fs.copyFileSync(path.join(profileDistDir, entry.tarball), dest);
+    }
+    // 索引一并镜像：市场那两条「随包插件」路由读的就是它，指向镜像之后它们也不再
+    // 碰应用目录。**必须等 tarball 全部到位再写**——索引先到、文件没到的中间态会让
+    // 「装回自带插件」找不到文件。
+    fs.copyFileSync(path.join(profileDistDir, 'index.json'), path.join(dir, 'index.json'));
+  } catch (error) {
+    logger.warn(`[profile-plugins] 镜像随包 tarball 失败，退回应用目录：${error?.message ?? error}`);
+    return null;
+  }
+  sweepMirror({ homeDir, keep: index.map((e) => e.tarball), logger });
+  return dir;
+}
+
+/**
+ * 清掉镜像目录里已经没人引用的旧 tarball。
+ *
+ * 升级几次之后这里会攒下每个历史版本的副本，而 profile 的依赖只指向当前那份。
+ * 只删 `.tgz`，别的文件（index.json）不碰。
+ */
+function sweepMirror({ homeDir, keep, logger }) {
+  try {
+    const dir = bundledMirrorDir(homeDir);
+    const kept = new Set(keep);
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith('.tgz') || kept.has(name)) continue;
+      fs.rmSync(path.join(dir, name), { force: true });
+    }
+  } catch (error) {
+    // 清不掉只是多占点磁盘，不该影响任何功能。
+    logger?.warn?.(`[profile-plugins] 清理旧 tarball 失败（无影响）：${error?.message ?? error}`);
+  }
+}
+
+/**
+ * 把清单里已经指不到东西的 `file:` 依赖改指到镜像。
+ *
+ * 为什么还要单独有这一步：镜像只保证**今后**装的都落在 dsh home，用户机器上早就
+ * 记着的那些老路径（指向应用目录）不会自己变。它们一旦失效，pnpm 连
+ * `dsh plugin add` 都跑不起来 —— 「下次启动自动装回来」那条自愈路径本身被堵死了，
+ * 只能在跑 pnpm **之前**先把清单改对。
+ *
+ * 只改能在镜像里找到同名文件的那些；找不到的原样留着，交给后面的步骤去报错，而
+ * 不是在这儿擅自删掉一个可能还在正常工作的插件。
+ *
+ * @returns {string[]} 被改过的包名
+ */
+function repairDanglingFileSpecs({ dir, mirrorDir, logger }) {
+  if (!mirrorDir) return [];
+  const manifestPath = path.join(dir, 'package.json');
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const { manifest: next, repaired } = planFileSpecRepair(
+      manifest,
+      (target) => fs.existsSync(target),
+      (basename) => {
+        const candidate = path.join(mirrorDir, basename);
+        return fs.existsSync(candidate) ? candidate.split(path.sep).join('/') : null;
+      },
+    );
+    if (repaired.length === 0) return [];
+    fs.writeFileSync(manifestPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+    logger.warn(`[profile-plugins] 这些依赖的安装包已不在原处，已改指 dsh home 里的副本：${repaired.join(', ')}`);
+    return repaired;
+  } catch (error) {
+    logger.warn(`[profile-plugins] 依赖路径修复失败（跳过）：${error?.message ?? error}`);
+    return [];
+  }
+}
+
+/**
+ * 起内核之前，把 profile 清单里「声明了但装不出来」的 bundle 条目摘掉。
+ *
+ * 这是**自愈**，不是对账：它不关心随包插件应该是哪些版本，只保证清单里剩下的每
+ * 一条都真的能解析出来。理由见 planBundlePrune —— 解不出来内核就直接抛异常退出，
+ * 而且早于第 4 层 patch 生效，安全模式救不回来。
+ *
+ * 摆在 reconcile 之前跑：reconcile 自己要动 pnpm，而一条指向不存在的包的依赖会
+ * 让 pnpm 整个失败（它解析的是全部依赖，不是只解析这次要装的那个）。先清理，
+ * 后面的每一步才有可能成功。
+ *
+ * 任何异常都吞掉：这条挂在启动路径上，它的全部意义是「别让应用起不来」，自己更
+ * 不该成为起不来的原因。
+ *
+ * @returns {string[]} 被摘掉的包名
+ */
+function pruneUnresolvableBundles({ dir, logger }) {
+  const manifestPath = path.join(dir, 'package.json');
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const names = planBundlePrune(manifest, (name) => {
+      try {
+        return fs.statSync(path.join(dir, 'node_modules', ...name.split('/'))).isDirectory();
+      } catch {
+        return false;
+      }
+    });
+    if (names.length === 0) return [];
+    const { manifest: next, pruned } = pruneBundles(manifest, names);
+    fs.writeFileSync(manifestPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+    // 说清楚发生了什么：用户下次打开市场会发现少了一个插件，日志里得有据可查。
+    logger.warn(`[profile-plugins] 清单里这些包已不在 profile 中，已摘除以免内核起不来：${pruned.join(', ')}`);
+    return pruned;
+  } catch (error) {
+    logger.warn(`[profile-plugins] 清单自愈检查失败（跳过）：${error?.message ?? error}`);
+    return [];
+  }
+}
+
 /**
  * 对账并安装。
  *
@@ -153,14 +306,29 @@ function runDshPluginAdd({ nodeExe, binJs, cwd, env, specs }) {
  * @param {string} options.seedStatePath 播种账本路径（可写，userData 下）
  * @param {{ log(msg: string): void, warn(msg: string): void }} options.logger
  * @param {NodeJS.ProcessEnv} [options.env]
- * @returns {Promise<{ installed: string[], failed: string[], shimDir: string|null }>}
+ * @param {typeof runDshPluginAdd} [options.runAdd] 测试用的注入口。真装一次要 spawn
+ *   pnpm，而「装的是镜像里那份还是应用目录里那份」恰恰是这次修复的要害 —— 那一行
+ *   没测到，等于这个 bug 随时能悄悄回来。
+ * @returns {Promise<{ installed: string[], failed: string[], shimDir: string|null, bundledDir: string|null }>}
  */
 async function reconcileProfilePlugins(options) {
   const {
     profileDistDir, nodeExe, binJs, pnpmCliPath, shimDir, seedStatePath, logger, env = process.env,
+    runAdd = runDshPluginAdd,
   } = options;
-  /** @type {{ installed: string[], failed: string[], shimDir: string|null }} */
-  const result = { installed: [], failed: [], shimDir: null };
+  /** @type {{ installed: string[], failed: string[], shimDir: string|null, bundledDir: string|null }} */
+  const result = { installed: [], failed: [], shimDir: null, bundledDir: null };
+
+  // **三步自愈排在最前面**，早于读随包索引那步的早退 —— 清单坏了的话，索引读不
+  // 读得出来都无所谓，后面每一步都会失败：
+  //   1. 镜像随包 tarball 到 dsh home（此后没人再引用应用目录，见 materializeBundledDist）
+  //   2. 把清单里已经指不到东西的 file: 依赖改指到镜像（否则 pnpm 整体跑不起来）
+  //   3. 摘掉「声明了但装不出来」的 bundle 条目（否则内核起不来，且安全模式救不回）
+  const homeDir0 = resolveDshHome(env);
+  const dir0 = profileDir(env);
+  result.bundledDir = materializeBundledDist({ profileDistDir, homeDir: homeDir0, logger });
+  repairDanglingFileSpecs({ dir: dir0, mirrorDir: result.bundledDir, logger });
+  pruneUnresolvableBundles({ dir: dir0, logger });
 
   let desired = [];
   try {
@@ -174,7 +342,7 @@ async function reconcileProfilePlugins(options) {
   result.shimDir = ensurePnpmShim({ shimDir, nodeExe, pnpmCliPath });
   if (desired.length === 0) return result;
 
-  const dir = profileDir(env);
+  const dir = dir0;
   let seeded = loadSeedState(seedStatePath);
 
   // 先清残留，再装新的。顺序不能反：改名的场景下新旧两个包声明同一个 entry id，
@@ -209,7 +377,8 @@ async function reconcileProfilePlugins(options) {
 
   const specs = [];
   for (const entry of plan) {
-    const tarball = path.join(profileDistDir, entry.tarball);
+    // 一律走镜像；镜像没建起来才退回应用目录（见 materializeBundledDist）。
+    const tarball = path.join(result.bundledDir ?? profileDistDir, entry.tarball);
     if (!fs.existsSync(tarball)) {
       logger.warn(`[profile-plugins] ${entry.packageName} 的 tarball 不在包里：${tarball}`);
       result.failed.push(entry.packageName);
@@ -221,7 +390,7 @@ async function reconcileProfilePlugins(options) {
   }
   if (specs.length === 0) return result;
 
-  const run = await runDshPluginAdd({
+  const run = await runAdd({
     nodeExe, binJs, cwd: path.dirname(binJs), env: spawnEnv0, specs: specs.map((s) => s.tarball),
   });
   if (run.ok) {
@@ -250,6 +419,10 @@ async function reconcileProfilePlugins(options) {
 
 module.exports = {
   reconcileProfilePlugins,
+  pruneUnresolvableBundles,
+  materializeBundledDist,
+  sweepMirror,
+  repairDanglingFileSpecs,
   ensurePnpmShim,
   withPnpmOnPath,
   resolveDshHome,

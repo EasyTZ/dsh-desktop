@@ -97,6 +97,14 @@ npm run icon             # 仅在改了 build/logo.svg 后重新生成 icon.png/
 
 **顺序很重要**：`pack-profile-plugins` 必须先于 `verify-kernel`。自检要拿它产出的 tgz 把插件播种进隔离 `DSH_HOME`，否则验的是一个「没有插件的内核」，插件加载阶段的崩溃会整个溜过去。`dist` / `dist:dir` 已经排好了顺序，手动分步时要自己注意。
 
+**随包 tarball 只许经镜像使用 —— 这条是不变式，别绕开。** 启动时先把 `plugins-dist/profile/` 的 tgz 与 `index.json` 整份镜像到 `<DSH_HOME>/.dsdesktop/bundled/`，之后所有人只认镜像：播种从镜像装、`DSH_DESKTOP_PROFILE_DIST`（市场的「装回自带插件」读它）改指镜像、清单里已经悬空的 `file:` 依赖按文件名改指镜像。
+
+原因是 pnpm 会把 `file:` 依赖**按绝对路径**记进 profile 的 `package.json`。指向应用安装目录的话，应用一升级里面的 tarball 就换成新版本的文件名（版本号在文件名里），旧路径随之消失；卸载或挪走应用更是直接没了。此后 profile 里**任何**一次 pnpm 操作都会失败——pnpm 解析的是全部依赖，不是只解析这次要动的那个。用户看到的是「插件装不上也卸不掉」，而原因在一个跟他这次操作毫无关系的包上。
+
+真实故障是这么发生的：重打了一次包（0.1.0 → 0.1.1，旧 tgz 被清掉）→ 用户在市场里卸载另一个插件 → pnpm 因为解析不到 market 的旧 tarball 而失败 → 卸到一半：`node_modules` 里的包没了、清单里的 `dependencies` 和 `dsh.profile.bundles` 还在 → 下次启动内核 `cannot resolve profile bundle` 直接退出，反复弹错。
+
+**安全模式在这条路径上是失效的**，这点值得单独记住：它靠第 4 层 patch 给 entry id 压 `disabled: true`，而崩溃发生在 profile **组装阶段**，早于 patch 生效；何况包都没了，连它的 entry id 都读不到。所以这类故障只能在**起内核之前**自愈，不能指望逃生舱。启动路径上因此有三步，顺序不能乱，且整体排在「读随包索引」那步早退之前：镜像 → 修悬空 `file:` → 摘掉「声明了但装不出来」的 bundle 条目。
+
 **插件不再搭内核的车**：`prepare-kernel` 拷的是纯内核，插件走另一条独立的线（tgz → 用户 profile）。升级全局 dsh 不影响插件，改插件也不用重打内核 —— 这正是迁到 profile 层的目的。
 
 ### 插件拆分后的开发内环

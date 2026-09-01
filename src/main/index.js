@@ -80,6 +80,10 @@ if (!gotLock) {
   // 插件市场要能列出「随应用分发的插件」并把被卸载的那些装回来 —— 装回来用的是这个
   // 目录里的 tgz，所以位置得告诉它。不注入的话，用户卸掉一个自带插件就再也装不回来了
   // （npm 上还没发，市场里搜不到），那是一扇单向门。
+  //
+  // 这里先指向应用目录，对账跑完会改指 dsh home 里的镜像（见下面的 bundledDir）。
+  // 市场装回插件时 pnpm 会把这个路径**按绝对路径**记进 profile 的清单，指向应用
+  // 目录的话，应用一升级那条依赖就悬空，此后所有插件都装不上也卸不掉。
   process.env.DSH_DESKTOP_PROFILE_DIST = PROFILE_DIST_DIR;
   const PNPM_STORE_DIR = path.join(app.getPath('userData'), 'pnpm-store');
   const BUILTIN_NODE_EXE = path.join(BUILTIN_KERNEL_DIR, 'node.exe');
@@ -386,11 +390,15 @@ if (!gotLock) {
       logger: console,
     }).catch((err) => {
       console.warn('[app] profile 插件对账失败（不影响启动）:', err);
-      return { shimDir: null };
+      return { shimDir: null, bundledDir: null };
     }).then((result) => {
       // 垫片目录进内核进程的 PATH：市场面板里的一键安装走的也是 `dsh plugin add`，
       // 它内部 spawn 裸 `pnpm`，用户机器上不一定装了。
       if (result && result.shimDir) service.pnpmShimDir = result.shimDir;
+      // 镜像建起来了就让市场也只认它 —— 见上面 DSH_DESKTOP_PROFILE_DIST 那段。
+      // 必须赶在 service.start() 之前：内核进程是从这里 fork 出去的，env 一旦传过去
+      // 就改不动了。
+      if (result && result.bundledDir) process.env.DSH_DESKTOP_PROFILE_DIST = result.bundledDir;
       return service.start();
     }).catch((err) => console.error('[app] 启动失败:', err));
   };

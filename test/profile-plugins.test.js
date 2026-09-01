@@ -8,6 +8,7 @@ const path = require('node:path');
 const {
   loadProfilePluginManifest, loadProfilePluginIndex, planProfileReconcile, installedVersionIn,
   profileBundleEntryIds, loadSeedState, saveSeedState, planProfileCleanup, entryIdsForPackage,
+  planBundlePrune, pruneBundles, planFileSpecRepair,
 } = require('../src/shared/profile-plugins');
 
 // profile 层（A1）插件的清单与对账。
@@ -282,4 +283,95 @@ test('entryIdsForPackage: 读某个已装包声明的 entry id', () => {
   assert.deepStrictEqual(entryIdsForPackage(dir, 'p'), ['e1', 'e2']);
   assert.deepStrictEqual(entryIdsForPackage(dir, 'missing'), []);
   assert.deepStrictEqual(entryIdsForPackage(dir, '../evil'), [], '非法包名不许拼进路径');
+});
+
+// —— 清单自愈 ————————————————————————————————————————
+//
+// 这一组防的是一次真实故障：用户在市场里卸载插件，`dsh plugin remove` 中途失败，
+// node_modules 里的包没了、清单里的两条声明还在，下次启动内核直接抛
+// `cannot resolve profile bundle` 退出。而且救不回来 —— 那是 profile 组装阶段，
+// 早于第 4 层 patch 生效，安全模式靠压 `disabled: true` 关插件，这时压给谁都没用。
+
+test('planBundlePrune: 声明了但装不出来的包要被摘掉', () => {
+  const manifest = {
+    dependencies: { '@easytz/dsh-git': '1', 'gone': '2' },
+    dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@easytz/dsh-git', 'gone'] } },
+  };
+  const installed = new Set(['@easytz/dsh-git']);
+  assert.deepStrictEqual(planBundlePrune(manifest, (n) => installed.has(n)), ['gone']);
+});
+
+test('planBundlePrune: 基础 bundle 不在 dependencies 里，一律不碰', () => {
+  // `@deepseek-ai/dsh-base` 是从 dsh 安装目录解析的，profile 的 node_modules 里
+  // 本来就没有。按「装没装」判会把它摘掉 —— 那等于把内核拆了。
+  const manifest = {
+    dependencies: {},
+    dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] } },
+  };
+  assert.deepStrictEqual(planBundlePrune(manifest, () => false), []);
+});
+
+test('planBundlePrune: 清单结构不对时返回空，不抛', () => {
+  assert.deepStrictEqual(planBundlePrune(null, () => false), []);
+  assert.deepStrictEqual(planBundlePrune({}, () => false), []);
+  assert.deepStrictEqual(planBundlePrune({ dependencies: {} }, () => false), []);
+  assert.deepStrictEqual(planBundlePrune({ dsh: { profile: { bundles: [] } } }, () => false), []);
+});
+
+test('pruneBundles: bundles 与 dependencies 两处都要摘', () => {
+  // 只摘 bundles 的话，profile 里留着一条指向不存在的包的依赖，下一次 pnpm 操作
+  // （用户装/卸任何一个插件）解析到它就整体失败 —— 故障从「起不来」变成「插件
+  // 再也装不上」，一样难查。
+  const manifest = {
+    dependencies: { keep: '1', gone: '2' },
+    dsh: { profile: { bundles: ['keep', 'gone'] } },
+  };
+  const { manifest: next, pruned } = pruneBundles(manifest, ['gone']);
+  assert.deepStrictEqual(pruned, ['gone']);
+  assert.deepStrictEqual(Object.keys(next.dependencies), ['keep']);
+  assert.deepStrictEqual(next.dsh.profile.bundles, ['keep']);
+  // 原对象不该被改（调用方可能还拿着它做别的判断）。
+  assert.deepStrictEqual(manifest.dsh.profile.bundles, ['keep', 'gone']);
+});
+
+test('pruneBundles: 没东西要摘时原样返回', () => {
+  const manifest = { dependencies: { a: '1' }, dsh: { profile: { bundles: ['a'] } } };
+  const out = pruneBundles(manifest, []);
+  assert.strictEqual(out.manifest, manifest);
+  assert.deepStrictEqual(out.pruned, []);
+});
+
+test('planFileSpecRepair: 按文件名找替代，找不到就原样留着', () => {
+  // file: 记的是绝对路径，路径变了但文件名（带版本号）没变，就是同一个包的同一版。
+  const manifest = { dependencies: {
+    a: 'file:D:/old/a-1.0.0.tgz',
+    b: 'file:D:/old/b-2.0.0.tgz',
+    c: 'file:D:/live/c-1.0.0.tgz',
+    d: '^1.0.0',
+  } };
+  // 镜像里连 c 的同名文件也有 —— 这样「不判断路径是否还有效、一律改写」才会露馅。
+  // 还指得到的依赖不该被动：它可能是用户自己从别处装的，重指到我们的镜像就换了包。
+  const have = new Set(['a-1.0.0.tgz', 'c-1.0.0.tgz']);
+  const { manifest: next, repaired } = planFileSpecRepair(
+    manifest,
+    (target) => target === 'D:/live/c-1.0.0.tgz',
+    (base) => (have.has(base) ? `D:/mirror/${base}` : null),
+  );
+  assert.deepStrictEqual(repaired, ['a']);
+  assert.strictEqual(next.dependencies.a, 'file:D:/mirror/a-1.0.0.tgz');
+  assert.strictEqual(next.dependencies.b, 'file:D:/old/b-2.0.0.tgz', '镜像里没有的不许动');
+  assert.strictEqual(next.dependencies.c, 'file:D:/live/c-1.0.0.tgz', '还指得到的不许动');
+  assert.strictEqual(next.dependencies.d, '^1.0.0', '不是 file: 的不许动');
+  assert.strictEqual(manifest.dependencies.a, 'file:D:/old/a-1.0.0.tgz', '原对象不该被改');
+});
+
+test('planFileSpecRepair: 反斜杠路径也要能取到文件名（Windows 上 pnpm 就这么写）', () => {
+  const manifest = { dependencies: { a: 'file:D:\\old\\a-1.0.0.tgz' } };
+  const { repaired } = planFileSpecRepair(manifest, () => false, (base) => (base === 'a-1.0.0.tgz' ? 'X' : null));
+  assert.deepStrictEqual(repaired, ['a']);
+});
+
+test('planFileSpecRepair: 没有 dependencies 时原样返回', () => {
+  const m = {};
+  assert.strictEqual(planFileSpecRepair(m, () => false, () => null).manifest, m);
 });

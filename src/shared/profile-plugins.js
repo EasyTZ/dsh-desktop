@@ -313,6 +313,88 @@ function planProfileCleanup(desired, seeded, entryIdsOf) {
  * @param {{ pluginsDir?: string|null, nodeModulesDir?: string|null, packageName: string }} opts
  * @returns {string}
  */
+/**
+ * 挑出 profile 清单里「声明了但装不出来」的 bundle 条目。
+ *
+ * 为什么需要它：内核 boot 时按 `dsh.profile.bundles` 逐个解析包目录，解不出来就
+ * **直接抛异常退出**（`cannot resolve profile bundle "X"`）。这不是插件坏了那种
+ * 局部故障 —— 它发生在 profile 组装阶段，早于第 4 层 patch 生效，所以安全模式也
+ * 救不回来：安全模式靠给 entry id 压 `disabled: true` 来关插件，而包都不在了，
+ * 我们连它的 entry id 都读不到。用户看到的是一个反复弹错、连逃生舱都进不去的应用。
+ *
+ * 真实发生过：用户在市场里卸载一个插件，`dsh plugin remove` 中途失败，node_modules
+ * 里的包没了、清单里的两条声明还在，下次启动就再也起不来。
+ *
+ * **只处理 profile 自己拥有的包**：判据是它同时出现在 `dependencies` 里。基础
+ * bundle（`@deepseek-ai/dsh-base` 等）是从 dsh 安装目录解析的，不在 profile 的
+ * dependencies 里，这里一律不碰 —— 误删那些等于把内核拆了。
+ *
+ * @param {any} manifest profile 的 package.json 内容
+ * @param {(packageName: string) => boolean} isInstalled 包目录在不在
+ * @returns {string[]} 该从清单里摘掉的包名
+ */
+function planBundlePrune(manifest, isInstalled) {
+  const bundles = manifest?.dsh?.profile?.bundles;
+  const deps = manifest?.dependencies;
+  if (!Array.isArray(bundles) || !deps || typeof deps !== 'object') return [];
+  const owned = new Set(Object.keys(deps));
+  return bundles.filter((name) => typeof name === 'string' && owned.has(name) && !isInstalled(name));
+}
+
+/**
+ * 把 planBundlePrune 选中的条目从清单里摘掉（`bundles` 与 `dependencies` 各一处）。
+ *
+ * 两处都摘：只摘 bundles 的话，profile 里留着一条指向不存在的包的依赖，下一次
+ * pnpm 操作（用户装/卸任何一个插件）解析到它就会失败 —— 故障从「起不来」变成
+ * 「插件再也装不上」，同样难查。
+ *
+ * @returns {{ manifest: any, pruned: string[] }} 新清单与被摘掉的名字
+ */
+function pruneBundles(manifest, names) {
+  if (names.length === 0) return { manifest, pruned: [] };
+  const drop = new Set(names);
+  const next = { ...manifest, dependencies: { ...manifest.dependencies } };
+  for (const name of drop) delete next.dependencies[name];
+  next.dsh = { ...manifest.dsh, profile: { ...manifest.dsh.profile } };
+  next.dsh.profile.bundles = manifest.dsh.profile.bundles.filter((n) => !drop.has(n));
+  return { manifest: next, pruned: [...drop] };
+}
+
+/**
+ * 挑出清单里已经指不到东西的 `file:` 依赖，并改指到能找到的替代品。
+ *
+ * 为什么这事非管不可：pnpm 解析的是**全部**依赖，不是只解析这次要动的那个。清单
+ * 里只要留着一条指向已消失文件的 `file:`，用户装/卸任何一个插件都会失败，连
+ * 「下次启动自动装回来」那条自愈路径也一起被堵死（它自己也要跑 pnpm）。
+ *
+ * 只按**文件名**找替代：`file:` 记的是绝对路径，路径变了但文件名（带版本号）没变，
+ * 就是同一个包的同一版。找不到的原样留着 —— 在这儿擅自删掉一条依赖，等于卸掉一个
+ * 可能还在正常工作的插件。
+ *
+ * @param {any} manifest profile 的 package.json 内容
+ * @param {(target: string) => boolean} exists 目标文件在不在
+ * @param {(basename: string) => string|null} findReplacement 按文件名找替代路径
+ * @returns {{ manifest: any, repaired: string[] }}
+ */
+function planFileSpecRepair(manifest, exists, findReplacement) {
+  const deps = manifest?.dependencies;
+  if (!deps || typeof deps !== 'object') return { manifest, repaired: [] };
+  const next = { ...deps };
+  const repaired = [];
+  for (const [name, spec] of Object.entries(deps)) {
+    if (typeof spec !== 'string' || !spec.startsWith('file:')) continue;
+    const target = spec.slice('file:'.length);
+    if (exists(target)) continue;
+    const basename = target.split(/[\\/]/).pop() ?? '';
+    const replacement = findReplacement(basename);
+    if (replacement === null) continue;
+    next[name] = `file:${replacement}`;
+    repaired.push(name);
+  }
+  if (repaired.length === 0) return { manifest, repaired: [] };
+  return { manifest: { ...manifest, dependencies: next }, repaired };
+}
+
 function resolvePluginSrcDir({ pluginsDir, nodeModulesDir, packageName }) {
   const candidates = [];
   if (pluginsDir) candidates.push(path.join(pluginsDir, packageName));
@@ -354,4 +436,7 @@ module.exports = {
   loadProfilePluginIndex,
   planProfileReconcile,
   installedVersionIn,
+  planBundlePrune,
+  pruneBundles,
+  planFileSpecRepair,
 };
