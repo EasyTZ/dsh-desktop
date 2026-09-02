@@ -306,16 +306,21 @@ function planProfileCleanup(desired, seeded, entryIdsOf) {
  * bundle（`@deepseek-ai/dsh-base` 等）是从 dsh 安装目录解析的，不在 profile 的
  * dependencies 里，这里一律不碰 —— 误删那些等于把内核拆了。
  *
+ * 判据交给调用方（见 installer 的 pruneUnresolvableBundles）：内核解析一条 bundle
+ * 要过两关——包目录得在，包声明的 overlay patch 文件也得在。两关任意一关不过都是
+ * 同一个后果（boot 抛异常、安全模式救不回来），所以这里只问一句「解得出来吗」，
+ * 具体查什么由那个能碰文件系统的调用方决定。
+ *
  * @param {any} manifest profile 的 package.json 内容
- * @param {(packageName: string) => boolean} isInstalled 包目录在不在
+ * @param {(packageName: string) => boolean} resolves 这条 bundle 内核解析得出来吗
  * @returns {string[]} 该从清单里摘掉的包名
  */
-function planBundlePrune(manifest, isInstalled) {
+function planBundlePrune(manifest, resolves) {
   const bundles = manifest?.dsh?.profile?.bundles;
   const deps = manifest?.dependencies;
   if (!Array.isArray(bundles) || !deps || typeof deps !== 'object') return [];
   const owned = new Set(Object.keys(deps));
-  return bundles.filter((name) => typeof name === 'string' && owned.has(name) && !isInstalled(name));
+  return bundles.filter((name) => typeof name === 'string' && owned.has(name) && !resolves(name));
 }
 
 /**

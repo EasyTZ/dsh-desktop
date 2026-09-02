@@ -7,7 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const {
   ensurePnpmShim, withPnpmOnPath, resolveDshHome, profileDir,
-  pruneUnresolvableBundles, materializeBundledDist, sweepMirror, repairDanglingFileSpecs, reconcileProfilePlugins,
+  pruneUnresolvableBundles, bundleResolves,
+  materializeBundledDist, sweepMirror, repairDanglingFileSpecs, reconcileProfilePlugins,
 } = require('../src/shared/profile-plugins-installer');
 
 function tmpdir() {
@@ -111,6 +112,48 @@ test('pruneUnresolvableBundles: 一切正常时不写盘（别无谓地动用户
   const before = fs.statSync(path.join(dir, 'package.json')).mtimeMs;
   assert.deepStrictEqual(pruneUnresolvableBundles({ dir, logger: quiet }), []);
   assert.strictEqual(fs.statSync(path.join(dir, 'package.json')).mtimeMs, before);
+});
+
+test('pruneUnresolvableBundles: 声明了 overlay patch 却没把文件发出来的包也要摘掉', () => {
+  // 复刻一次真实事故：用户从市场装了 @morlay/session-branch@0.0.11，它的 manifest 里
+  // 写着 `dsh.bundle.patch: "./cordis.patch.yml"`，但 `files` 只有 ["lib"]，那个 yml
+  // 压根不在发布的 tarball 里。包目录好端端地在，所以旧判据（只查目录）放行了它，
+  // 下一次启动 boot 直接抛 `failed to read overlay …: ENOENT` —— 和「包目录没了」
+  // 是同一个致命位置，安全模式一样救不回来。
+  const dir = tmpdir();
+  writeManifest(dir, {
+    dependencies: { '@morlay/session-branch': '0.0.11', '@xmanrui/dsh-im': '4.7.0' },
+    dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@morlay/session-branch', '@xmanrui/dsh-im'] } },
+  });
+  const broken = path.join(dir, 'node_modules', '@morlay', 'session-branch');
+  const good = path.join(dir, 'node_modules', '@xmanrui', 'dsh-im');
+  fs.mkdirSync(broken, { recursive: true });
+  fs.mkdirSync(good, { recursive: true });
+  const declares = JSON.stringify({ dsh: { bundle: { patch: './cordis.patch.yml' } } });
+  fs.writeFileSync(path.join(broken, 'package.json'), declares, 'utf8');
+  fs.writeFileSync(path.join(good, 'package.json'), declares, 'utf8');
+  // 好的那个把文件真的发出来了。
+  fs.writeFileSync(path.join(good, 'cordis.patch.yml'), 'plugins: {}\n', 'utf8');
+
+  assert.deepStrictEqual(pruneUnresolvableBundles({ dir, logger: quiet }), ['@morlay/session-branch']);
+  const next = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+  assert.deepStrictEqual(next.dsh.profile.bundles, ['@deepseek-ai/dsh-base', '@xmanrui/dsh-im'],
+    '只摘坏的那个，正常的插件一个都不能碰');
+  assert.deepStrictEqual(Object.keys(next.dependencies), ['@xmanrui/dsh-im']);
+});
+
+test('bundleResolves: 说不清的时候一律放行——摘除会连 dependencies 一起删，等于替用户卸插件', () => {
+  const dir = tmpdir();
+  const pkgDir = path.join(dir, 'node_modules', 'weird');
+  fs.mkdirSync(pkgDir, { recursive: true });
+  // 连 package.json 都没有：可能是杀软锁了文件、可能是一次 EBUSY。真坏了内核自己会
+  // 报错，为一个读取失败就删掉用户装的东西比那更糟。
+  assert.strictEqual(bundleResolves(dir, 'weird'), true, '读不出 manifest 不算确证');
+  fs.writeFileSync(path.join(pkgDir, 'package.json'), '{ 坏的', 'utf8');
+  assert.strictEqual(bundleResolves(dir, 'weird'), true, 'manifest 不是合法 JSON 也不算确证');
+  fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name: 'weird' }), 'utf8');
+  assert.strictEqual(bundleResolves(dir, 'weird'), true, '没声明 patch 就没这个问题');
+  assert.strictEqual(bundleResolves(dir, 'never-installed'), false, '包目录不在才是确证');
 });
 
 test('pruneUnresolvableBundles: 清单读不出来也不能抛（它挂在启动路径上）', () => {

@@ -282,6 +282,48 @@ function repairDanglingFileSpecs({ dir, profileDistDir, mirrorDir, logger }) {
 }
 
 /**
+ * 内核能不能把这一条 bundle 解析出来。两关都要过：
+ *
+ *   1. **包目录在不在** —— 卸载中途失败会留下「清单里还有、目录已经没了」的残局；
+ *   2. **它声明的 overlay patch 文件在不在** —— 包目录好端端的，但 `dsh.bundle.patch`
+ *      指的那个文件不在发布的 tarball 里。
+ *
+ * 第 2 条是踩出来的：`@morlay/session-branch@0.0.11` 声明了 `./cordis.patch.yml`，
+ * 而它的 `files` 只写了 `["lib"]`，那个 yml 压根没发出来。装的时候一切正常（npm 上
+ * 的 manifest 声明得好好的），下一次启动 boot 直接抛：
+ *
+ *   Error: dsh: failed to read overlay …/cordis.patch.yml: ENOENT
+ *
+ * 后果和第 1 条一模一样——发生在 profile 组装阶段，早于第 4 层 patch 生效，安全模式
+ * 救不回来。所以判据必须两关都查：只查目录在不在，等于只挡住了这类故障的一半。
+ *
+ * **只在能确证坏了的时候才返回 false。** 摘除是有代价的：它连 `dependencies` 一起
+ * 删（见 pruneBundles 的注释），等于替用户卸掉一个插件。所以「读不出 package.json」
+ * 这种说不清的情况一律放行——可能只是杀软锁了文件、可能是一次 EBUSY，为一个读取
+ * 失败就删掉用户装的东西，比让内核报一次错更糟。真坏了内核自己会说。
+ *
+ * @param {string} dir profile 目录
+ * @param {string} name 包名
+ */
+function bundleResolves(dir, name) {
+  const pkgDir = path.join(dir, 'node_modules', ...name.split('/'));
+  try {
+    if (!fs.statSync(pkgDir).isDirectory()) return false;
+  } catch {
+    return false;
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'));
+  } catch {
+    return true;
+  }
+  const patch = manifest?.dsh?.bundle?.patch;
+  if (typeof patch !== 'string' || patch.length === 0) return true;
+  return fs.existsSync(path.join(pkgDir, patch));
+}
+
+/**
  * 起内核之前，把 profile 清单里「声明了但装不出来」的 bundle 条目摘掉。
  *
  * 这是**自愈**，不是对账：它不关心随包插件应该是哪些版本，只保证清单里剩下的每
@@ -301,18 +343,13 @@ function pruneUnresolvableBundles({ dir, logger }) {
   const manifestPath = path.join(dir, 'package.json');
   try {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    const names = planBundlePrune(manifest, (name) => {
-      try {
-        return fs.statSync(path.join(dir, 'node_modules', ...name.split('/'))).isDirectory();
-      } catch {
-        return false;
-      }
-    });
+    const names = planBundlePrune(manifest, (name) => bundleResolves(dir, name));
     if (names.length === 0) return [];
     const { manifest: next, pruned } = pruneBundles(manifest, names);
     fs.writeFileSync(manifestPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
     // 说清楚发生了什么：用户下次打开市场会发现少了一个插件，日志里得有据可查。
-    logger.warn(`[profile-plugins] 清单里这些包已不在 profile 中，已摘除以免内核起不来：${pruned.join(', ')}`);
+    logger.warn(`[profile-plugins] 清单里这些包内核解析不出来（目录缺失，或声明的 overlay 文件没发出来），`
+      + `已摘除以免内核起不来：${pruned.join(', ')}`);
     return pruned;
   } catch (error) {
     logger.warn(`[profile-plugins] 清单自愈检查失败（跳过）：${error?.message ?? error}`);
@@ -446,6 +483,7 @@ async function reconcileProfilePlugins(options) {
 module.exports = {
   reconcileProfilePlugins,
   pruneUnresolvableBundles,
+  bundleResolves,
   materializeBundledDist,
   sweepMirror,
   repairDanglingFileSpecs,
