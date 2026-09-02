@@ -27,11 +27,11 @@
     "pack-profile-plugins": "node scripts/pack-profile-plugins.mjs"
   },
   "dependencies": {
-    "@easytz/dsh-git": "github:EasyTZ/dsh-git#v0.5.1",
-    "@easytz/dsh-market": "github:EasyTZ/dsh-market#v1.2.0",
+    "@easytz/dsh-git": "github:EasyTZ/dsh-git#v0.5.2",
+    "@easytz/dsh-market": "github:EasyTZ/dsh-market#v1.2.1",
     "@easytz/dsh-reveal-explorer": "github:EasyTZ/dsh-reveal-explorer#v0.2.1",
-    "@easytz/dsh-terminal-panel": "github:EasyTZ/dsh-terminal-panel#v0.2.1",
-    "@easytz/dsh-ui-balance": "github:EasyTZ/dsh-ui-balance#v0.5.0"
+    "@easytz/dsh-terminal-panel": "github:EasyTZ/dsh-terminal-panel#v0.2.2",
+    "@easytz/dsh-ui-balance": "github:EasyTZ/dsh-ui-balance#v0.5.2"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
