@@ -1,19 +1,6 @@
 'use strict';
 
-// **profile 层插件**（A1）的清单与对账逻辑。
-//
-// 和 plugins.json 那套（A2）是两回事，别混：
-//
-// | | A2：plugins.json | A1：profile-plugins.json |
-// |---|---|---|
-// | 装到哪 | 内核的 node_modules | `$DSH_HOME/profiles/<name>/` |
-// | 谁激活 | 我们生成的 `--patch` overlay（第 4 层） | 插件自带的 `dsh.bundle.patch`（第 2 层） |
-// | 内核热更新后 | 必须重装（跟着内核走） | 原样还在（不受内核更换影响） |
-// | 用户能不能卸 | 不能，只能开关 | 能，市场面板里就有卸载 |
-//
-// 判据是**生命周期归属**：随包分发、该跟着内核一起前进和回退的东西放 A2；用户自己
-// 装的、不该因为内核换了一版就消失的东西放 A1。插件市场自己属于后者——它管理的正是
-// profile 层，自己住在那儿才自洽，而且它同时也是个可以发布给任何 dsh 用户的通用插件。
+// **profile 层插件**的清单与对账逻辑。
 //
 // 但「用户装的」不等于「桌面不管」：市场是发行版承诺提供的功能，所以桌面要保证它
 // **首次启动就在、坏了会自愈、版本跟着应用版本走**。这就是这里的对账（reconcile）：
@@ -29,7 +16,7 @@ const path = require('node:path');
 const { isNewer } = require('./version');
 
 /**
- * 合法的 npm 包名形状（可选 scope）。与 plugin-install.js 里那条同源同理由：
+ * 合法的 npm 包名形状（可选 scope）。理由：
  * packageName 会被摊进 path.join 去拼路径，`../..` 形状能穿越出去。
  */
 const PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
@@ -205,7 +192,7 @@ const PATCH_ENTRY_ID_RE = /^\s*-?\s*id:\s*(\S+)\s*$/;
  * 列出 profile 层插件声明的全部 loader entry id。
  *
  * 用途只有一个：**安全模式**。安全模式生成的 overlay 原本只管「不激活 A2 插件」，
- * 而 profile 层（A1）的插件是自己 insert 自己的第 2 层条目 —— 我们不生成它、也就
+ * 而 profile 层的插件是自己 insert 自己的第 2 层条目 —— 我们不生成它、也就
  * 关不掉它。结果是：用户从市场装的插件把内核搞崩时，安全模式救不了他，因为那个
  * 插件在安全模式下照样加载。补法是从第 4 层主动 disable 它们（实测有效：第 4 层的
  * 一条 `- id: X` 配 `disabled: true`，能关掉第 2 层的同名条目）。
@@ -304,16 +291,6 @@ function planProfileCleanup(desired, seeded, entryIdsOf) {
 }
 
 /**
- * 解析插件源码目录：先查 plugins/<packageName>（随仓库走的），再查
- * node_modules/<packageName>（git 依赖 vendor 的）。打包态只有 resources/plugins
- * 一处（extraResources 已把全部源码摊进去），nodeModulesDir 传 null 即可。
- *
- * 判存在用「目录里有 package.json」而不是「目录存在」：node_modules 里同名
- * 空目录（安装中途失败留下的）不该被当成可用源码。
- * @param {{ pluginsDir?: string|null, nodeModulesDir?: string|null, packageName: string }} opts
- * @returns {string}
- */
-/**
  * 挑出 profile 清单里「声明了但装不出来」的 bundle 条目。
  *
  * 为什么需要它：内核 boot 时按 `dsh.profile.bundles` 逐个解析包目录，解不出来就
@@ -400,9 +377,16 @@ function planFileSpecRepair(manifest, exists, findReplacement) {
   return { manifest: { ...manifest, dependencies: next }, repaired };
 }
 
-function resolvePluginSrcDir({ pluginsDir, nodeModulesDir, packageName }) {
+/**
+ * 解析插件源码目录：node_modules/<packageName>（git 依赖 vendor 进来的那份）。
+ *
+ * 判存在用「目录里有 package.json」而不是「目录存在」：node_modules 里同名
+ * 空目录（安装中途失败留下的）不该被当成可用源码。
+ * @param {{ nodeModulesDir?: string|null, packageName: string }} opts
+ * @returns {string}
+ */
+function resolvePluginSrcDir({ nodeModulesDir, packageName }) {
   const candidates = [];
-  if (pluginsDir) candidates.push(path.join(pluginsDir, packageName));
   if (nodeModulesDir) candidates.push(path.join(nodeModulesDir, packageName));
   for (const dir of candidates) {
     if (fs.existsSync(path.join(dir, 'package.json'))) return dir;

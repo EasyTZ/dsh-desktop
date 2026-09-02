@@ -4,7 +4,7 @@
 // 目录约定（runtime/ 这层子目录不能省，原因见该文件注释）统一定义在
 // src/shared/kernel-paths.js。
 //
-// 注意：自定义插件**不搭这趟车**。它们住在用户的 profile 里（A1），由启动时的
+// 注意：自定义插件**不搭这趟车**。它们住在用户的 profile 里，由启动时的
 // reconcileProfilePlugins 从 plugins-dist/profile 的 tgz 装进去，和内核是两条独立
 // 的生命线 —— 这正是迁到 profile 层的目的：换内核不动插件，换插件不动内核。
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';

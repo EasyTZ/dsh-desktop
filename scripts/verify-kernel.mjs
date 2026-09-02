@@ -12,9 +12,12 @@
 // 那个隔离 home**，否则验的是一个「没有插件的内核」，插件加载阶段的崩溃会整个溜
 // 过去 —— 而用户跑的从来是「内核 + 插件」这个组合。
 //
-// 插件迁到 profile 层（A1）之后播种方式变了：不再是往 overlay 里写 `- insert:`，
+// 插件迁到 profile 层之后播种方式变了：不再是往 overlay 里写 `- insert:`，
 // 而是拿 plugins-dist/profile 里的 tgz 走和正式启动完全相同的那套对账装进去。
 // 因此 dist.mjs 里 pack-profile-plugins 必须排在本脚本**之前**。
+//
+// 端口交给内核自己申请（--port 0），与 DshService / kernel-updater 一致；显式探
+// 端口的老做法会撞 Windows 保留端口段。
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -23,9 +26,9 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const { findFreePort } = require('../src/shared/net.js');
+const { URL_LINE_RE, URL_LINE_TIMEOUT_MS, waitUrlLine, waitHttpReady } = require('../src/shared/kernel-boot.js');
 const { findDshInstallSync } = require('../src/shared/dsh-locate.js');
-const { reconcileProfilePlugins } = require('../src/main/profile-plugins-installer.js');
+const { reconcileProfilePlugins } = require('../src/shared/profile-plugins-installer.js');
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const kernelDir = join(root, 'kernel');
@@ -75,40 +78,50 @@ const seeded = await reconcileProfilePlugins({
 if (seeded.failed.length > 0) fail(`profile 插件没装进自检 home：${seeded.failed.join(', ')}`);
 console.log(`[verify-kernel] profile 插件已播种（${seeded.installed.length} 个），开始 boot 自检…`);
 
-const port = await findFreePort();
-const child = spawn(nodeExe, [binJs, 'web', '--host', '127.0.0.1', '--port', String(port)], {
+const child = spawn(nodeExe, [binJs, 'web', '--host', '127.0.0.1', '--port', '0', '--no-open'], {
   cwd: root,
   env: { ...process.env, DSH_HOME: home, DSH_TELEMETRY_MODE: 'DISABLED' },
   windowsHide: true,
 });
 
 let stderr = '';
-child.stderr.on('data', (chunk) => { stderr += String(chunk); });
-child.stdout.on('data', () => {});
-
-let exited = false;
-child.on('exit', (code, signal) => {
-  exited = true;
-  fail(`内核在就绪前退出（code=${code} signal=${signal}）`, stderr);
+/** @type {{ value: {code: number|null, signal: NodeJS.Signals|null}|null }} */
+const exitState = { value: null };
+/** @type {{ value: string|null }} */
+const urlState = { value: null };
+let stdoutTail = '';
+child.stdout.on('data', (d) => {
+  if (urlState.value) return;
+  stdoutTail = (stdoutTail + String(d)).slice(-4000);
+  const m = URL_LINE_RE.exec(stdoutTail);
+  if (m) urlState.value = m[1].replace(/\/+$/, '');
 });
+child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+child.on('error', () => {});
+// 只记录退出，不在这里 fail：判「起来了没有」是下面那段等待的事，两处都判会互相打架。
+child.on('exit', (code, signal) => { exitState.value = { code, signal }; });
 
 const started = Date.now();
-let ready = false;
-while (!ready && !exited && Date.now() - started < READY_TIMEOUT_MS) {
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(2000) });
-    // < 500 才算就绪：dsh 是先绑端口、后加载 plugin tree，端口能应答 ≠ 内核可用。
-    if (res.status < 500) ready = true;
-  } catch {
-    await new Promise((r) => setTimeout(r, 400));
+try {
+  const url = await waitUrlLine(urlState, exitState, URL_LINE_TIMEOUT_MS);
+  await waitHttpReady(url, READY_TIMEOUT_MS, () => exitState.value !== null);
+  // 端口通了不代表 plugin tree 加载完成：dsh 先绑端口、后加载插件树，插件加载阶段
+  // 崩溃时 HTTP 早就能应答了。观察一会儿，确认进程没有随后崩溃。
+  await new Promise((r) => setTimeout(r, 1500));
+  if (exitState.value) {
+    const { code, signal } = exitState.value;
+    // 抛出而不是直接 fail：清理（kill + 删临时 home）只写在 catch 一处。
+    throw new Error(`内核在就绪后随即退出（code=${code} signal=${signal}）`);
   }
+} catch (error) {
+  child.kill();
+  rmSync(home, { recursive: true, force: true });
+  fail(error?.message ?? String(error), stderr);
 }
 
-child.removeAllListeners('exit');
 child.kill();
 rmSync(home, { recursive: true, force: true });
 
-if (!ready) fail(`${READY_TIMEOUT_MS / 1000}s 内没等到内核就绪`, stderr);
 console.log(`[verify-kernel] 通过：出厂内核能正常启动（${((Date.now() - started) / 1000).toFixed(1)}s）`);
 
 /**

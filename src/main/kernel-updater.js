@@ -3,13 +3,12 @@
 const { spawn, execFile } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
-const http = require('node:http');
 const path = require('node:path');
+const { URL_LINE_RE, URL_LINE_TIMEOUT_MS, waitUrlLine, waitHttpReady } = require('../shared/kernel-boot');
 const { isNewer } = require('../shared/version');
 const { readKernelVersion, resolvePackagedKernel } = require('../shared/kernel-paths');
-const { loadPluginState, disabledEntryIds, writeActivationPatch } = require('../shared/activation-patch');
-const { profileBundleEntryIds } = require('../shared/profile-plugins');
-const { reconcileProfilePlugins } = require('./profile-plugins-installer');
+const { prepareActivationPatch } = require('../shared/activation-patch');
+const { reconcileProfilePlugins } = require('../shared/profile-plugins-installer');
 
 const REGISTRY_PRESETS = [
   'https://registry.npmmirror.com',
@@ -21,61 +20,6 @@ const AUTO_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 // 新内核 HTTP 通了之后再观察这么久，确认它没有在插件加载阶段随后崩溃。
 const VERIFY_SETTLE_MS = 1500;
-
-// 内核启动后打印的地址行，`--port 0` 时端口只能从这里读回来。与 DshService 用的
-// 是同一条正则（两边都在解析同一个上游输出，格式一变要一起改）。
-const URL_LINE_RE = /dsh web:\s+(https?:\/\/\S+)/;
-// 等这行出现的上限。超时说明内核连端口都没绑上，多半是启动阶段就崩了。
-const URL_LINE_TIMEOUT_MS = 20000;
-
-/**
- * 等内核把地址行打出来。进程中途退出就立刻失败，不空等到超时 —— 那正是「新内核
- * 起不来」最常见的样子。
- * @param {{ value: string|null }} urlState
- * @param {{ value: unknown }} exitState
- * @param {number} timeoutMs
- * @returns {Promise<string>}
- */
-function waitUrlLine(urlState, exitState, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const attempt = () => {
-      if (urlState.value) return resolve(urlState.value);
-      if (exitState.value !== null) return reject(new Error('进程在打印地址行之前退出'));
-      if (Date.now() > deadline) return reject(new Error('等不到内核打印地址行'));
-      setTimeout(attempt, 100);
-    };
-    attempt();
-  });
-}
-
-/**
- * 轮询 HTTP 直到就绪（<500），超时抛错。isDead 可选：进程已经退出时立刻失败，
- * 不必空等到超时。
- * @returns {Promise<void>}
- */
-function waitHttpReady(url, timeoutMs, isDead) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const attempt = () => {
-      const req = http.get(url, (res) => {
-        res.resume();
-        if (res.statusCode && res.statusCode < 500) return resolve();
-        schedule();
-      });
-      req.on('error', schedule);
-      req.setTimeout(2000, () => { req.destroy(); schedule(); });
-    };
-    const schedule = () => {
-      if (typeof isDead === 'function' && isDead()) {
-        return reject(new Error('进程在就绪前退出'));
-      }
-      if (Date.now() > deadline) return reject(new Error(`超时（${url}）`));
-      setTimeout(attempt, 250);
-    };
-    attempt();
-  });
-}
 
 /**
  * 内核独立热更新器：检查 npm registry、下载新版 @deepseek-ai/dsh 到用户可写
@@ -100,9 +44,6 @@ class KernelUpdater extends EventEmitter {
     this.pnpmStoreDir = opts.pnpmStoreDir ?? null;
     this.activationPatchPath = opts.activationPatchPath ?? null;
     this.pluginStatePath = opts.pluginStatePath ?? null;
-    // 开发态传仓库根的 node_modules（git 依赖插件在那里）；打包态全部插件源码
-    // 都在 extraResources 的 plugins/ 下，传 null 只查那一处。
-    this.nodeModulesDir = opts.nodeModulesDir ?? null;
     this.onRestart = opts.onRestart ?? null;
 
     /** @type {{ phase: string, currentVersion: string|null, latestVersion: string|null,
@@ -433,9 +374,10 @@ class KernelUpdater extends EventEmitter {
    */
   _activationPatch(profileDirForVerify) {
     if (!this.activationPatchPath) return null;
-    const all = profileBundleEntryIds(profileDirForVerify);
-    const wanted = new Set(disabledEntryIds(loadPluginState(this.pluginStatePath)));
-    return writeActivationPatch(this.activationPatchPath, all.filter((id) => wanted.has(id)));
+    return prepareActivationPatch({
+      patchPath: this.activationPatchPath, statePath: this.pluginStatePath,
+      profileDir: profileDirForVerify,
+    });
   }
 
   /**

@@ -26,11 +26,6 @@ function dshManifestPath(kernelDir) {
   return path.join(kernelDir, 'runtime', 'node_modules', '@deepseek-ai', 'dsh', 'package.json');
 }
 
-/** 内核目录里依赖平铺的 node_modules（hoisted linker 的顶层）。 */
-function kernelNodeModulesDir(kernelDir) {
-  return path.join(kernelDir, 'runtime', 'node_modules');
-}
-
 /**
  * 内核目录是否看起来完整（node.exe 与 bin.js 都在）。
  * @param {string} kernelDir
@@ -112,7 +107,6 @@ function resolvePackagedKernel(
 module.exports = {
   kernelPaths,
   dshManifestPath,
-  kernelNodeModulesDir,
   isKernelComplete,
   readKernelVersion,
   resolvePackagedKernel,

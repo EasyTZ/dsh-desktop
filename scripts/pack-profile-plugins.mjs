@@ -1,4 +1,4 @@
-// 把 profile 层（A1）插件打成 tarball，连同索引摊到 plugins-dist/profile/，
+// 把 profile 层插件打成 tarball，连同索引摊到 plugins-dist/profile/，
 // 由 electron-builder 的 extraResources 一起进包（resources/plugins/profile/）。
 //
 // 为什么是 tarball 而不是像 A2 那样铺源码目录：这些插件是要用**包管理器**装进用户
@@ -34,7 +34,7 @@ mkdirSync(outDir, { recursive: true });
 
 const index = [];
 for (const { packageName, required } of plugins) {
-  const srcDir = resolvePluginSrcDir({ pluginsDir, nodeModulesDir, packageName });
+  const srcDir = resolvePluginSrcDir({ nodeModulesDir, packageName });
   const pkg = JSON.parse(readFileSync(join(srcDir, 'package.json'), 'utf8'));
   const version = pkg.version;
   if (typeof version !== 'string' || version.length === 0) {

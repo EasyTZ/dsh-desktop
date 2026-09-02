@@ -2,7 +2,7 @@
 
 // 生成交给内核的 `--patch` overlay（patch 层栈的**第 4 层**，上游本来就留给调用方）。
 //
-// 这个文件曾经是 plugin-install.js 的一半。插件全部迁到 profile 层（A1）之后，
+// 插件全部迁到 profile 层之后，
 // 「装」这件事整个交给了 pnpm（见 profile-plugins.js），overlay 也从「插入我们的
 // 插件」退化成只做一件事：**按用户意愿停用某些条目**。
 //
@@ -17,6 +17,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { profileBundleEntryIds } = require('./profile-plugins');
 
 /**
  * 读用户的插件开关状态：`entryId → boolean`，`false` 表示停用。
@@ -83,9 +84,31 @@ function writeActivationPatch(patchPath, disableIds) {
   return patchPath;
 }
 
+/**
+ * 按 profile 现状 + 用户开关生成停用 overlay，返回文件路径。
+ *
+ * 这是 overlay **唯一**的写者：DshService 的正式启动与 KernelUpdater 的自检都调它。
+ * 以前是两份，一份处理安全模式一份不处理——同一份配置两个写者迟早会不一致。
+ *
+ * @param {object} o
+ * @param {string} o.patchPath        overlay 落盘位置
+ * @param {string|null} o.statePath   用户开关状态文件（plugin-state.json）
+ * @param {string} o.profileDir       要读 entry id 的 profile 目录
+ * @param {boolean} [o.safeMode]      安全模式：停用 exclude 以外的全部，不看用户状态
+ * @param {string[]} [o.exclude]      永不停用的包名（恢复入口自己）
+ * @returns {string} patchPath
+ */
+function prepareActivationPatch({ patchPath, statePath, profileDir, safeMode = false, exclude = [] }) {
+  const all = profileBundleEntryIds(profileDir, { exclude });
+  if (safeMode) return writeActivationPatch(patchPath, all);
+  const wanted = new Set(disabledEntryIds(loadPluginState(statePath)));
+  return writeActivationPatch(patchPath, all.filter((id) => wanted.has(id)));
+}
+
 module.exports = {
   loadPluginState,
   disabledEntryIds,
   renderActivationPatch,
   writeActivationPatch,
+  prepareActivationPatch,
 };

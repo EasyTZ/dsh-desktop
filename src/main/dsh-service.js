@@ -5,20 +5,18 @@ const { EventEmitter } = require('node:events');
 const http = require('node:http');
 const path = require('node:path');
 const { app } = require('electron');
+const { URL_LINE_RE, URL_LINE_TIMEOUT_MS } = require('../shared/kernel-boot');
 const { resolvePackagedKernel } = require('../shared/kernel-paths');
 const { findFreePort } = require('../shared/net');
 const { findDshBinJsAsync } = require('../shared/dsh-locate');
-const { loadPluginState, disabledEntryIds, writeActivationPatch } = require('../shared/activation-patch');
+const { prepareActivationPatch } = require('../shared/activation-patch');
 const { isPortBindFailure, firstBindErrorLine } = require('../shared/error-detail');
-const { profileBundleEntryIds } = require('../shared/profile-plugins');
-const { withPnpmOnPath, profileDir } = require('./profile-plugins-installer');
-
-const URL_LINE_RE = /dsh web:\s+(https?:\/\/\S+)/;
+const { withPnpmOnPath, profileDir } = require('../shared/profile-plugins-installer');
 
 /**
  * 安全模式下**不**关掉的 profile 层插件。
  *
- * 目前只有插件市场：dsh-plugin-manager 的 UI 并进它之后，它是唯一能关插件的界面。
+ * 目前只有插件市场：它是唯一能关插件的界面。
  * 安全模式的意义是「把出问题的插件关掉」，把那个能关插件的东西也关了就等于没有安全模式。
  */
 const RECOVERY_PACKAGES = ['@easytz/dsh-market'];
@@ -26,10 +24,6 @@ const RECOVERY_PACKAGES = ['@easytz/dsh-market'];
 // 端口绑定失败的换端口重试上限。三次都撞上说明不是运气问题（多半是安全软件拦截
 // 或系统保留了很大一段端口），继续试没有意义，交给上层报错。
 const MAX_BIND_RETRIES = 3;
-
-// 等内核打印 URL 行的上限。--port 0 时端口只能从那行拿到，等不到就退回老做法。
-// 取 20s：冷启动要加载整棵 plugin tree，慢机器上十几秒是常态。
-const URL_LINE_TIMEOUT_MS = 20_000;
 
 // 端口应答后再观察这么久，确认内核没有在 plugin tree 加载阶段随后崩溃。
 // dsh 是「先绑端口、后加载插件树」，两者之间存在一个「HTTP 已通但内核仍会
@@ -260,13 +254,12 @@ class DshService extends EventEmitter {
   #prepareActivationPatch() {
     if (!this.activationPatchPath) return null;
     try {
-      const all = profileBundleEntryIds(profileDir(), { exclude: RECOVERY_PACKAGES });
-      if (this.safeMode) {
-        if (all.length > 0) this.logger.log(`[dsh] 安全模式：停用 ${all.join(', ')}`);
-        return writeActivationPatch(this.activationPatchPath, all);
-      }
-      const wanted = new Set(disabledEntryIds(loadPluginState(this.pluginStatePath)));
-      return writeActivationPatch(this.activationPatchPath, all.filter((id) => wanted.has(id)));
+      const patch = prepareActivationPatch({
+        patchPath: this.activationPatchPath, statePath: this.pluginStatePath,
+        profileDir: profileDir(), safeMode: this.safeMode, exclude: RECOVERY_PACKAGES,
+      });
+      if (this.safeMode) this.logger.log('[dsh] 安全模式：已停用市场以外的全部 profile 插件');
+      return patch;
     } catch (error) {
       this.logger.warn('[dsh] 生成 overlay 失败，插件停用状态本次不生效:', error?.message ?? error);
       return null;

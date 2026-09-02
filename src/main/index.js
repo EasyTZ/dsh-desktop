@@ -14,7 +14,7 @@ const { summarizeStderr } = require('../shared/error-detail');
 const { needsUnpack, unpackKernel } = require('../shared/kernel-unpack');
 const { kernelPaths } = require('../shared/kernel-paths');
 const { showUpdaterWindow, hideUpdaterWindow, destroyUpdaterWindow } = require('./updater-window');
-const { reconcileProfilePlugins } = require('./profile-plugins-installer');
+const { reconcileProfilePlugins } = require('../shared/profile-plugins-installer');
 
 const APP_ID = 'com.deepseek.desktop';
 const ISSUES_URL = 'https://github.com/EasyTZ/dsh-desktop/issues/new/choose';
@@ -45,7 +45,7 @@ if (!gotLock) {
   let appUpdateInfo = null;
   let isQuitting = false;
   let kernelFallbackAttempted = false;
-  // 安全模式：只加载清单里标了 safeMode 的插件（当前只有插件管理面板）。
+  // 安全模式：只加载插件市场（dsh-service.js 的 RECOVERY_PACKAGES），其余 profile 插件一律停用。
   // **刻意只存在内存里**：重启应用就回到正常模式，不会让用户卡在安全模式里
   // 出不来，也不需要再造一个「怎么退出安全模式」的入口。
   let safeMode = false;
@@ -428,9 +428,6 @@ if (!gotLock) {
       pnpmStoreDir: PNPM_STORE_DIR,
       activationPatchPath: ACTIVATION_PATCH_PATH,
       pluginStatePath: PLUGIN_STATE_PATH,
-      // 开发态热更新出的新内核要重装插件，其中 git 依赖插件在仓库 node_modules；
-      // 打包态全部源码都在 resources/plugins，无需这处候选。
-      nodeModulesDir: app.isPackaged ? null : path.join(__dirname, '..', '..', 'node_modules'),
       onRestart: restartApp,
     });
 

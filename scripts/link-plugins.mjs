@@ -9,13 +9,13 @@
 //   1) `node_modules/<插件>` → `../<仓库>`  —— 「源码从哪来」。打包时
 //      pack-profile-plugins 的 `npm pack` 打的是这里，HTTP 基线测试读的也是这里。
 //   2) `<DSH_HOME>/profiles/web/node_modules/<插件>` → `../<仓库>` —— 「跑的是哪份」。
-//      插件迁到 profile 层（A1）之后，**真正被内核 import 的是 profile 里那份**，
+//      插件迁到 profile 层之后，**真正被内核 import 的是 profile 里那份**，
 //      它由 pnpm 从 tgz 装成一份独立拷贝，跟 node_modules 里那份没有任何关系。
 //      只链第 1 处的话，改完代码什么都不会变 —— 这是迁移后最容易踩的一脚。
 //
 // 链上第 2 处之后，联调手感和迁移前一样甚至更好：改 client.js 内核的 HMR 立刻推给
 // 浏览器（连注入的 <style> 都会重挂），改 index.js 重启内核即可，**没有任何拷贝
-// 或重装步骤**。这也是为什么迁到 A1 之后 install-plugin 那套「拷进内核」可以整个
+// 或重装步骤**。这也是为什么迁到 profile 层之后「拷进内核」那套机制可以整个
 // 删掉：它存在的唯一理由就是把源码搬到内核能 import 到的地方，而现在插件本来就
 // 住在那儿。
 // 为什么不用 `npm link` 也不用 `file:` 依赖：
@@ -34,7 +34,7 @@ import { existsSync, lstatSync, readFileSync, rmSync, symlinkSync, writeFileSync
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { vendoredPluginNames } from '../src/shared/profile-plugins.js';
-import { profileDir } from '../src/main/profile-plugins-installer.js';
+import { profileDir } from '../src/shared/profile-plugins-installer.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const nodeModules = join(root, 'node_modules');
@@ -203,8 +203,7 @@ if (mode === 'on') {
   }
   // 联调恢复到位，`dist` 那次没善终的标记可以销了。
   rmSync(join(root, '.dist-unlinked'), { force: true });
-  console.log('\n[link-plugins] 已进入联调模式。改完插件源码后跑 npm run install-plugin 即可生效。');
-  console.log('[link-plugins] 发版前记得 npm run unlink-plugins —— 否则 npm run dist 会被拦下。');
+  console.log('\n[link-plugins] 已进入联调模式。改 lib/client.js 立刻生效；改 lib/index.js 重启内核（npm start）生效。');
   if (failed) process.exit(1);
 } else {
   let removed = 0;

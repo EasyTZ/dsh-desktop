@@ -11,7 +11,7 @@ const {
   planBundlePrune, pruneBundles, planFileSpecRepair,
 } = require('../src/shared/profile-plugins');
 
-// profile 层（A1）插件的清单与对账。
+// profile 层插件的清单与对账。
 //
 // 这套逻辑决定的是「桌面要不要往用户的 profile 里装东西」，判错的两个方向都不好：
 // 判少了 → 发行版承诺的市场面板不在，用户看到的是一个缺功能的应用；判多了 → 每次

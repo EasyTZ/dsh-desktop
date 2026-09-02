@@ -8,7 +8,7 @@ const path = require('node:path');
 const {
   ensurePnpmShim, withPnpmOnPath, resolveDshHome, profileDir,
   pruneUnresolvableBundles, materializeBundledDist, sweepMirror, repairDanglingFileSpecs, reconcileProfilePlugins,
-} = require('../src/main/profile-plugins-installer');
+} = require('../src/shared/profile-plugins-installer');
 
 function tmpdir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'dsdesktop-shim-'));

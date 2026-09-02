@@ -1,6 +1,7 @@
 'use strict';
 
-// Git 面板客户端半的冒烟测试。理由同 terminal-client-smoke：这个文件不在
+// Git 面板客户端半的冒烟测试：在 node 里伪造浏览器全局与 React，真实执行
+// node_modules/@easytz/dsh-git/lib/client.js。这个文件不在
 // typecheck 的 include 里，`node --check` 又只查语法，而 useCallback/useEffect 的
 // 依赖数组在 render 时立即求值 —— 引用后面才声明的 const 会触发 TDZ，组件整个渲染
 // 崩掉，表现就是「面板打不开」。只有真实执行组件函数才会暴露。
@@ -12,6 +13,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const { createFakeReact } = require('./helpers/fake-react');
 
 const CLIENT = path.join(__dirname, '..', 'node_modules', '@easytz', 'dsh-git', 'lib', 'client.js');
 
@@ -49,19 +51,10 @@ function loadModule() {
     fetch: async () => ({ ok: true, json: async () => ({ ok: true, data: {} }) }),
   });
 
-  const reactJsx = {
-    jsx: (type, props, key) => ({ type, props: props || {}, key }),
-    jsxs: (type, props, key) => ({ type, props: props || {}, key }),
-    Fragment: Symbol('Fragment'),
-  };
-  const reactHooks = {
-    useState: (init) => [typeof init === 'function' ? init() : init, () => {}],
-    useCallback: (fn) => fn,
-    useEffect: () => {},
-    useMemo: (fn) => fn(),
-    useRef: (init) => ({ current: init }),
-    useSyncExternalStore: (_sub, get) => get(),
-  };
+  // 共用那份「真的会渲染」的假 React：状态真存、effect 真跑、setState 触发重渲染。
+  // 手搓空壳版（useState 原样返回初值、useEffect 空函数）测不到东西，见 helpers 里
+  // 的说明。
+  const { jsxRuntime: reactJsx, hooks: reactHooks } = createFakeReact();
   // createPortal 在这个假 DOM 里没有意义（也没有真容器），直接把节点原样返回——
   // 测试关心的是「面板这棵树渲染得出来」，而不是它最终挂在哪个 DOM 容器下。
   // 插件之所以要 portal，是为了让遮罩的 z-index 能压过桌面端那个 z-index:900 的

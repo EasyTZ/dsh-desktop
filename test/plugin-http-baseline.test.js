@@ -37,19 +37,18 @@ const HINT = '（非联调态报红 = 钉住的 tag 还不含这条防线，需�
  * 解析出每个插件的两半入口源码（联调态下 node_modules 里是指向工作副本的链接）。
  */
 function pluginEntries() {
-  // 读 **profile 清单**（A1）。插件迁到 profile 层之后 plugins.json 就空了，而这里
-  // 原先读的正是它——六条断言遍历 0 个对象、全部空转通过，等于这道防线安静地消失了。
+  // 读 profile 清单。历史教训：这里曾经读一份已经清空的旧清单，六条断言遍历 0 个
+  // 对象、全部空转通过——等于这道防线安静地消失了。
   // 「测试还绿着」和「测试还在测东西」是两回事，这就是那个区别的实例。
   const plugins = loadProfilePluginManifest(path.join(ROOT, 'plugins'));
   return plugins.map((plugin) => {
     const dir = resolvePluginSrcDir({
-      pluginsDir: path.join(ROOT, 'plugins'),
       nodeModulesDir: path.join(ROOT, 'node_modules'),
       packageName: plugin.packageName,
     });
     const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
     const main = typeof pkg.main === 'string' ? pkg.main : 'lib/index.js';
-    // 插件可以**只有 host 半**：dsh-plugin-manager 的面板并进插件市场之后，它就只剩
+    // 插件可以**只有 host 半**：曾经有一个只剩
     // 路由、不再有浏览器半。没有 `./client` 导出时 clientFile 给 null，由调用方跳过，
     // 而不是退回一个猜出来的路径去读——那样读不到会抛，把「这插件没有 UI」这个正常
     // 情况报成测试失败。
@@ -122,8 +121,8 @@ test('originAllowed 的实现在四个插件之间保持一致', () => {
 // 且发生在用户机器上、表现为黑屏。已知有三个这样的命名空间：
 //
 //   1. cordis loader 的 entryId  —— `- insert:` 不去重，重复 id 抛
-//      `duplicate loader entry id`。由 plugin-install.test.js 的 `dsdesktop-`
-//      前缀规则守着。
+//      `duplicate loader entry id`。靠各插件 cordis.patch.yml 里的
+//      `dsdesktop-` 前缀避开。
 //   2. cordis 的服务名 —— `ctx.provide` 见到已注册的名字直接抛
 //      `service "x" has been registered at <...>`。上游当前 70 个服务名全是
 //      `fs` / `shell` / `web` / `storage` / `sessions` / `terminals` 这类通用词，

@@ -1,6 +1,6 @@
 'use strict';
 
-// 启动时把 **profile 层（A1）插件**对账回随包分发的那一版。
+// 启动时把 **profile 层插件**对账回随包分发的那一版。
 //
 // 背景见 src/shared/profile-plugins.js 的头部注释：插件市场装在用户的 profile 里
 // （不跟内核走，内核热更新/回退都不影响它），但它同时又是发行版承诺提供的功能，
@@ -26,7 +26,7 @@ const path = require('node:path');
 const {
   loadProfilePluginIndex, planProfileReconcile, planProfileCleanup, entryIdsForPackage,
   installedVersionIn, loadSeedState, saveSeedState, planBundlePrune, pruneBundles, planFileSpecRepair,
-} = require('../shared/profile-plugins');
+} = require('./profile-plugins');
 
 /** 单个插件的安装超时。本地 tgz 不需要下载，但 pnpm 建链接、写 lockfile 也要点时间。 */
 const INSTALL_TIMEOUT_MS = 120000;

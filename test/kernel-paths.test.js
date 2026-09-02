@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
 const {
-  kernelPaths, dshManifestPath, kernelNodeModulesDir, isKernelComplete,
+  kernelPaths, dshManifestPath, isKernelComplete,
   readKernelVersion, resolvePackagedKernel,
 } = require('../src/shared/kernel-paths');
 
@@ -29,10 +29,11 @@ test('kernelPaths: runtime/ 这层子目录不能丢', () => {
   assert.ok(p.nodeExe.endsWith('node.exe'));
 });
 
-test('dshManifestPath / kernelNodeModulesDir 与 kernelPaths 同源', () => {
+test('dshManifestPath 与 kernelPaths 同源', () => {
   const dir = path.join('C:', 'k');
-  assert.ok(dshManifestPath(dir).startsWith(kernelNodeModulesDir(dir)));
-  assert.ok(kernelPaths(dir).binJs.startsWith(kernelNodeModulesDir(dir)));
+  const nm = path.join(dir, 'runtime', 'node_modules');
+  assert.ok(dshManifestPath(dir).startsWith(nm));
+  assert.ok(kernelPaths(dir).binJs.startsWith(nm));
 });
 
 test('isKernelComplete: node.exe 与 bin.js 必须同时存在', () => {
