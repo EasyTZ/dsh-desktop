@@ -131,6 +131,34 @@ function inspect(name) {
 const linked = linkedPlugins();
 let restore = false;
 
+// 非联调态也要核对一遍，只是**降级成警告**。
+//
+// 这道检查原先整段包在 `if (linked.length > 0)` 里，等于把保险挂在「检测到联调」上，
+// 而不是挂在「打包」这个动作上。可「插件改了、tag 还没打，于是产物里是旧版本」这件事
+// 跟联调开没开毫无关系 —— 联调关着的时候照样会发生，而且**一声不吭**，比开着更危险。
+//
+// 为什么这里只警告不中止：非联调态下「插件仓库有 WIP、但这次就是要用钉住的版本打包」
+// 是完全正当的用法（在做插件的下一版，同时要发一个只改了外壳的应用版本）。中止会把
+// 这条正当路径堵死。而联调态下同样的偏差要中止 —— 那时你一直在用工作副本调试，产物
+// 却是另一份，落差最大、最容易自欺。
+//
+// 只核对同级目录里**存在**的工作副本：别人 clone 下来只有 app 一个仓库时不该报噪音。
+const unlinkedProblems = linked.length > 0
+  ? []
+  : vendoredPluginNames(root).flatMap((name) => (
+    existsSync(join(workspace, name.startsWith('@') ? name.split('/')[1] : name)) ? inspect(name) : []
+  ));
+if (unlinkedProblems.length > 0) {
+  console.warn('');
+  console.warn('[dist] 注意：下列插件的工作副本跟钉住的 tag 对不上，这些改动**不会**进这个包：');
+  console.warn('');
+  for (const p of unlinkedProblems) console.warn(`  ! ${p}`);
+  console.warn('');
+  console.warn('这个包用的是 package.json 里钉住的版本。要把改动打进去：插件仓库 commit + push + 打新 tag，');
+  console.warn('回本仓库升 package.json 的 #tag，再重新执行本命令。确认无所谓就不用管 —— 打包照常进行。');
+  console.warn('');
+}
+
 if (linked.length > 0) {
   console.log(`[dist] 检测到 ${linked.length} 个插件处于联调模式，核对能否安全换回钉住的版本…`);
   const problems = linked.flatMap(inspect);
