@@ -15,7 +15,7 @@
 // 恢复用 try/finally：打包失败也要把联调恢复回去，否则人会在不知情的状态下继续
 // 开发，改半天没生效。
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { vendoredPluginNames } from '../src/shared/profile-plugins.js';
@@ -35,6 +35,46 @@ const runCmd = (line) => {
   const args = isWin ? ['/d', '/s', '/c', line] : ['-c', line];
   execFileSync(cmd, args, { cwd: root, stdio: 'inherit', windowsHide: true });
 };
+
+/**
+ * 打完包清掉 dist 里**其它版本**的产物，只留当前版本这一套。
+ *
+ * 一版就是 350 MB 上下（安装包 + zip），攒了五个版本 dist 就到 2 GB 了。
+ * collect-release 是按版本号精确挑产物的，所以旧文件不会让打包出错——纯粹占地方，
+ * 而且真正的发布归档在 GitHub Releases 上，本地留一份历史没有意义。
+ *
+ * 三条自保规则，宁可少删不可错删：
+ *   1) 只删**文件**，目录一律不碰（win-unpacked 是下次增量打包要用的）；
+ *   2) 文件名里认不出 `-x.y.z` 版本号的一律留着（builder-debug.yml、latest.yml、
+ *      builder-effective-config.yaml 都属于这类）；
+ *   3) 版本号用 `(?=[-.])` 前瞻断言截断，不吞后面的标识。少了这条，
+ *      `DeepSeek Harness Desktop-1.7.1-win.zip` 会被解析成版本 `1.7.1-win`，
+ *      跟当前版本对不上，于是把**这次刚打出来的 zip** 给删了。
+ *
+ * 放在 collect-release **之后**：先确认新产物已经生成并归到 release/，再删旧的。
+ * 反过来的话，打包中途失败就会既没有新的、又没有旧的。
+ */
+function pruneOtherVersions() {
+  const distDir = join(root, 'dist');
+  if (!existsSync(distDir)) return;
+  const current = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
+  const removed = [];
+  for (const name of readdirSync(distDir)) {
+    const full = join(distDir, name);
+    if (!statSync(full).isFile()) continue;
+    const found = /-(\d+\.\d+\.\d+)(?=[-.])/.exec(name)?.[1];
+    // 预发布版（1.7.1-beta.1）的产物文件名里带的是 1.7.1，也算当前版本。
+    if (!found || found === current || current.startsWith(`${found}-`)) continue;
+    rmSync(full, { force: true });
+    removed.push(name);
+  }
+  if (removed.length === 0) {
+    console.log(`[dist] dist 里没有其它版本的产物需要清理（当前 ${current}）。`);
+    return;
+  }
+  console.log(`[dist] 已清掉 ${removed.length} 个其它版本的产物，只留 ${current}：`);
+  for (const name of removed) console.log(`  - ${name}`);
+}
 
 const git = (repo, args) =>
   execFileSync('git', args, { cwd: repo, encoding: 'utf8', windowsHide: true }).trim();
@@ -130,7 +170,12 @@ try {
   run('verify-kernel.mjs');
   run('pack-kernel.mjs');
   runCmd(dirOnly ? 'npx electron-builder --win --dir' : 'npx electron-builder --win');
-  if (!dirOnly) run('collect-release.mjs');
+  if (!dirOnly) {
+    run('collect-release.mjs');
+    // --dir 模式不出安装包，这时候清理会把上一版的安装包删掉却没有新的顶上，
+    // 所以只在完整打包成功之后清。
+    pruneOtherVersions();
+  }
 } finally {
   // 无论打包成功还是失败都要恢复，否则人会在「以为还在联调」的状态下继续改，
   // 改半天不生效。
