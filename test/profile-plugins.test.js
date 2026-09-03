@@ -8,7 +8,7 @@ const path = require('node:path');
 const {
   loadProfilePluginManifest, loadProfilePluginIndex, planProfileReconcile, installedVersionIn,
   profileBundleEntryIds, loadSeedState, saveSeedState, planProfileCleanup, entryIdsForPackage,
-  planBundlePrune, pruneBundles, planFileSpecRepair,
+  planBundlePrune, pruneBundles, planFileSpecRepair, isLinkedIn,
 } = require('../src/shared/profile-plugins');
 
 // profile 层插件的清单与对账。
@@ -104,6 +104,44 @@ test('planProfileReconcile: 播种过且还装着时，只升级不降级', () =
   assert.deepStrictEqual(planProfileReconcile(desired, () => '0.5.0', seeded), []);
   // 用户自己从市场装了更新的版本 → **不许降级**，他的选择优先
   assert.deepStrictEqual(planProfileReconcile(desired, () => '0.9.0', seeded), []);
+});
+
+test('planProfileReconcile: 联调链接一律不碰——required 的市场也不例外', () => {
+  // 真实事故：市场源码是 1.2.2、随包 tarball 是 1.2.1，联调 junction 铺好之后对账
+  // 读到的「实际版本」是工作副本那个 1.2.2，required 的「不等就装」当场命中，pnpm
+  // 把 junction 换成 tarball 解出来的实体目录。表现是「改完代码怎么都不生效」，
+  // 而日志里只有一句跟市场无关的 pnpm ENOENT。发行版里没有 junction，这条分支
+  // 永远不会命中，所以它不削弱 required 的自愈语义。
+  const desired = [
+    { packageName: 'dsh-market', version: '1.2.1', tarball: 't.tgz', required: true },
+    { packageName: 'dsh-git', version: '0.5.0', tarball: 'g.tgz' },
+  ];
+  const linked = (name) => name === 'dsh-market';
+  assert.deepStrictEqual(
+    planProfileReconcile(desired, () => '1.2.2', {}, linked),
+    [desired[1]],
+    '联调的市场要跳过，没联调的 dsh-git 照常播种',
+  );
+  // 缺省参数不能改变原有行为：不传 isLinked 时还是老样子。
+  assert.deepStrictEqual(planProfileReconcile(desired, () => '1.2.2', {}), desired);
+});
+
+test('isLinkedIn: 认得出联调链接，实体目录和不存在都是 false', () => {
+  const dir = tmpdir();
+  const nm = path.join(dir, 'node_modules', '@scope');
+  fs.mkdirSync(path.join(nm, 'real'), { recursive: true });
+  assert.strictEqual(isLinkedIn(dir, '@scope/real'), false);
+  assert.strictEqual(isLinkedIn(dir, '@scope/nope'), false);
+  const target = path.join(dir, 'workcopy');
+  fs.mkdirSync(target, { recursive: true });
+  try {
+    // Windows 上联调铺的是 junction（不要管理员权限），Node 的 lstat 一并报成
+    // symbolic link；别的平台用普通目录 symlink。
+    fs.symlinkSync(target, path.join(nm, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+  } catch {
+    return; // 造不出链接的环境（权限不足）就不测这一半，别把整个套件搞红
+  }
+  assert.strictEqual(isLinkedIn(dir, '@scope/linked'), true);
 });
 
 test('planProfileReconcile: 装的比期望新也要拉回来（应用回退时）', () => {

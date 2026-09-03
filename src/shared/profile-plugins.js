@@ -104,14 +104,23 @@ function loadProfilePluginIndex(dir) {
  * 不是 profile package.json 里的依赖 spec —— 从 tarball 装进去的 spec 长
  * `file:...tgz` 这样，跟版本号对不上，拿它比会每次都判定为「漂了」然后反复重装。
  *
+ * **联调态的包一律跳过**（`isLinked` 为真）。profile 里那份是 `npm run link-plugins`
+ * 铺的 junction，指向同级工作副本；对账读到的「实际版本」就是工作副本 package.json
+ * 里那个号，跟随包 tarball 的版本天然对不上。对 `required: true` 的市场来说这条
+ * 「不等就装」当场生效：pnpm 把 junction 换成 tarball 解出来的实体目录，联调静默
+ * 失效——改完代码怎么都不生效，而日志里只有一句无关的 pnpm 报错。发行版里不存在
+ * junction，这个分支永远不会命中，所以它不影响真实用户的自愈语义。
+ *
  * @param {DesiredProfilePlugin[]} desired 随包分发的期望状态
  * @param {(packageName: string) => string|null} installedVersionOf 读实际装到的版本，没装返回 null
  * @param {Record<string, string>} [seeded] 播种账本：包名 → 播种时的版本
+ * @param {(packageName: string) => boolean} [isLinked] profile 里那份是不是联调链接
  * @returns {DesiredProfilePlugin[]} 需要安装的条目（顺序保持清单顺序）
  */
-function planProfileReconcile(desired, installedVersionOf, seeded = {}) {
+function planProfileReconcile(desired, installedVersionOf, seeded = {}, isLinked = () => false) {
   const plan = [];
   for (const entry of desired) {
+    if (isLinked(entry.packageName)) continue;
     const actual = installedVersionOf(entry.packageName);
     if (entry.required) {
       // 恢复入口：不等就装（含降级——应用回退时插件也要跟着回到配套版本）。
@@ -174,6 +183,22 @@ function installedVersionIn(profileDir, packageName) {
     return typeof manifest.version === 'string' ? manifest.version : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * profile 里那份是不是指向工作副本的链接（`npm run link-plugins` 的联调态）。
+ *
+ * Windows 上铺的是目录 junction（不需要管理员权限），Node 的 lstat 把它一并报成
+ * symbolic link —— link-plugins.mjs 自己判「联调」用的也是这一条，两边保持一致。
+ * @param {string} profileDir
+ * @param {string} packageName
+ */
+function isLinkedIn(profileDir, packageName) {
+  try {
+    return fs.lstatSync(path.join(profileDir, 'node_modules', ...packageName.split('/'))).isSymbolicLink();
+  } catch {
+    return false;
   }
 }
 
@@ -430,6 +455,7 @@ module.exports = {
   loadProfilePluginIndex,
   planProfileReconcile,
   installedVersionIn,
+  isLinkedIn,
   planBundlePrune,
   pruneBundles,
   planFileSpecRepair,

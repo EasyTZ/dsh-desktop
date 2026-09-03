@@ -25,7 +25,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {
   loadProfilePluginIndex, planProfileReconcile, planProfileCleanup, entryIdsForPackage,
-  installedVersionIn, loadSeedState, saveSeedState, planBundlePrune, pruneBundles, planFileSpecRepair,
+  installedVersionIn, isLinkedIn, loadSeedState, saveSeedState, planBundlePrune, pruneBundles, planFileSpecRepair,
 } = require('./profile-plugins');
 
 /** 单个插件的安装超时。本地 tgz 不需要下载，但 pnpm 建链接、写 lockfile 也要点时间。 */
@@ -432,7 +432,14 @@ async function reconcileProfilePlugins(options) {
     }
   }
 
-  const plan = planProfileReconcile(desired, (name) => installedVersionIn(dir, name), seeded);
+  // 联调（`npm run link-plugins`）铺的 junction 一律不碰，理由见 planProfileReconcile。
+  // 单独 log 一句：静默跳过的话，「为什么这个插件没跟着随包版本升上去」查起来没有线索。
+  const linked = desired.filter((entry) => isLinkedIn(dir, entry.packageName)).map((entry) => entry.packageName);
+  if (linked.length > 0) logger.log(`[profile-plugins] 联调中，跳过对账：${linked.join(', ')}`);
+
+  const plan = planProfileReconcile(
+    desired, (name) => installedVersionIn(dir, name), seeded, (name) => isLinkedIn(dir, name),
+  );
   if (plan.length === 0) {
     logger.log(`[profile-plugins] 无需处理（随包 ${desired.length} 个，已播种 ${Object.keys(seeded).length} 个）`);
     return result;
