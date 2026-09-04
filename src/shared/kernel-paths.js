@@ -3,7 +3,7 @@
 // 内核目录 layout 的唯一定义处。内置内核、用户内核（热更新产物）、staging
 // 三处共用同一套约定，任何一处改了都必须从这里改。
 //
-//   <kernelDir>/node.exe
+//   <kernelDir>/<NODE_BIN>
 //   <kernelDir>/runtime/node_modules/@deepseek-ai/dsh/lib/bin.js
 //
 // 注意 runtime/ 这一层不能省：electron-builder 硬排除 extraResources `from`
@@ -13,10 +13,15 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { isNewer } = require('./version');
 
-/** 由内核目录推导 node.exe 与 bin.js 路径。 */
+// 内核目录里 node 可执行文件的文件名。只有 win32 带 .exe 扩展名——这是当前
+// 进程运行的平台，不是打包目标平台，运行时（main 进程、构建脚本本机验证）
+// 用它天然正确；跨平台构建目标由各自的构建脚本自己决定，不从这里派生。
+const NODE_BIN = process.platform === 'win32' ? 'node.exe' : 'node';
+
+/** 由内核目录推导 node 可执行文件与 bin.js 路径。 */
 function kernelPaths(kernelDir) {
   return {
-    nodeExe: path.join(kernelDir, 'node.exe'),
+    nodeExe: path.join(kernelDir, NODE_BIN),
     binJs: path.join(kernelDir, 'runtime', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'),
   };
 }
@@ -27,7 +32,7 @@ function dshManifestPath(kernelDir) {
 }
 
 /**
- * 内核目录是否看起来完整（node.exe 与 bin.js 都在）。
+ * 内核目录是否看起来完整（node 可执行文件与 bin.js 都在）。
  * @param {string} kernelDir
  * @param {(p: string) => boolean} [exists]
  */
@@ -105,6 +110,7 @@ function resolvePackagedKernel(
 }
 
 module.exports = {
+  NODE_BIN,
   kernelPaths,
   dshManifestPath,
   isKernelComplete,

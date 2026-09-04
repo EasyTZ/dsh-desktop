@@ -200,12 +200,28 @@ function readOctal(block, offset, length) {
 async function extractUstar(archive, target) {
   const stream = fs.createReadStream(archive);
   let carry = Buffer.alloc(0);
-  /** @type {{handle: fsp.FileHandle, remaining: number, padding: number}|null} */
+  /** @type {{handle: fsp.FileHandle, remaining: number, padding: number, path: string, mode: number}|null} */
   let open = null;
 
   const finishOpen = async () => {
     if (open && open.remaining === 0 && open.padding === 0) {
       await open.handle.close();
+      // ustar 头里的 mode 才是权威来源——`fsp.open(dest, 'w')` 用的是 umask 默认
+      // 权限（通常 0644）。Windows 上没有执行位这回事，NTFS 上任何权限都能跑，
+      // 这个 bug 一直没暴露；换到 POSIX，只要走了这条兜底路径，解出来的 node /
+      // rg 就是不可执行的，内核直接起不来。
+      //
+      // 两个前提检查：
+      //   - **win32 直接跳过**。那边 chmod 唯一的效果是切换只读属性，帮不上忙，
+      //     反倒会把归档里 0444 的条目变成只读文件；而内核树有 15000+ 个文件，
+      //     省下的是同样数量的无用系统调用。
+      //   - **mode 为 0 时跳过**。readOctal 解析不出来时返回 0，chmod(path, 0)
+      //     会让文件**谁都读不了**，内核换一种方式坏掉，而且报错指不到这里。
+      //     我们自己 `tar --format=ustar` 打的归档一定有 mode，所以这纯粹是给
+      //     「兜底解包器遇到意外归档」兜底 —— 那正是它存在的理由。
+      if (process.platform !== 'win32' && open.mode) {
+        await fsp.chmod(open.path, open.mode & 0o7777);
+      }
       open = null;
     }
   };
@@ -239,6 +255,7 @@ async function extractUstar(archive, target) {
       if (header.every((b) => b === 0)) continue;
 
       const name = readString(header, 0, 100);
+      const mode = readOctal(header, 100, 8);
       const size = readOctal(header, 124, 12);
       const typeflag = String.fromCharCode(header[156] || 0x30);
       const prefix = readString(header, 345, 155);
@@ -257,7 +274,7 @@ async function extractUstar(archive, target) {
       if (typeflag !== '0' && typeflag !== '\0') {
         // 符号链接等类型我们的归档里不会有，跳过它的数据块。
         const padding = size % BLOCK === 0 ? 0 : BLOCK - (size % BLOCK);
-        open = { handle: /** @type {any} */ (null), remaining: size, padding };
+        open = { handle: /** @type {any} */ (null), remaining: size, padding, path: dest, mode };
         // 没有句柄就不能走上面的写分支，这里直接把数据丢掉。
         const drop = Math.min(size + padding, carry.length);
         carry = carry.subarray(drop);
@@ -268,7 +285,7 @@ async function extractUstar(archive, target) {
       await fsp.mkdir(path.dirname(dest), { recursive: true });
       const handle = await fsp.open(dest, 'w');
       const padding = size % BLOCK === 0 ? 0 : BLOCK - (size % BLOCK);
-      open = { handle, remaining: size, padding };
+      open = { handle, remaining: size, padding, path: dest, mode };
       await finishOpen();
     }
   }

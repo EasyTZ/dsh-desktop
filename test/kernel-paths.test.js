@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
 const {
-  kernelPaths, dshManifestPath, isKernelComplete,
+  NODE_BIN, kernelPaths, dshManifestPath, isKernelComplete,
   readKernelVersion, resolvePackagedKernel,
 } = require('../src/shared/kernel-paths');
 
@@ -19,14 +19,14 @@ const fakeVersions = (map) => (dir) => map[dir] ?? null;
 
 const USER = path.join('C:', 'user');
 const BUILTIN = path.join('C:', 'builtin');
-/** 用户内核完整（node.exe + bin.js 都在）。 */
+/** 用户内核完整（node 可执行文件 + bin.js 都在）。 */
 const userComplete = fakeExists([kernelPaths(USER).nodeExe, kernelPaths(USER).binJs]);
 
 test('kernelPaths: runtime/ 这层子目录不能丢', () => {
   const p = kernelPaths(path.join('C:', 'k'));
   assert.ok(p.binJs.includes(`${path.sep}runtime${path.sep}`),
     'electron-builder 会排除 from 根部的 node_modules，少了 runtime/ 就打不进安装包');
-  assert.ok(p.nodeExe.endsWith('node.exe'));
+  assert.ok(p.nodeExe.endsWith(NODE_BIN));
 });
 
 test('dshManifestPath 与 kernelPaths 同源', () => {
@@ -36,11 +36,11 @@ test('dshManifestPath 与 kernelPaths 同源', () => {
   assert.ok(kernelPaths(dir).binJs.startsWith(nm));
 });
 
-test('isKernelComplete: node.exe 与 bin.js 必须同时存在', () => {
+test('isKernelComplete: node 可执行文件与 bin.js 必须同时存在', () => {
   const dir = path.join('C:', 'k');
   const { nodeExe, binJs } = kernelPaths(dir);
   assert.strictEqual(isKernelComplete(dir, fakeExists([nodeExe, binJs])), true);
-  assert.strictEqual(isKernelComplete(dir, fakeExists([nodeExe])), false, '只有 node.exe 不算完整');
+  assert.strictEqual(isKernelComplete(dir, fakeExists([nodeExe])), false, '只有 node 可执行文件不算完整');
   assert.strictEqual(isKernelComplete(dir, fakeExists([binJs])), false);
   assert.strictEqual(isKernelComplete(dir, fakeExists([])), false);
 });
@@ -57,7 +57,7 @@ test('resolvePackagedKernel: 用户内核完整时优先用户内核', () => {
 test('resolvePackagedKernel: 用户内核残缺则回退内置', () => {
   const user = path.join('C:', 'user');
   const builtin = path.join('C:', 'builtin');
-  // 只有 node.exe：热更新写到一半被打断的典型现场。
+  // 只有 node 可执行文件：热更新写到一半被打断的典型现场。
   const got = resolvePackagedKernel(user, builtin, fakeExists([kernelPaths(user).nodeExe]));
   assert.strictEqual(got.source, 'builtin');
   assert.strictEqual(got.binJs, kernelPaths(builtin).binJs);

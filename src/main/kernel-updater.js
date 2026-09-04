@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { URL_LINE_RE, URL_LINE_TIMEOUT_MS, waitUrlLine, waitHttpReady } = require('../shared/kernel-boot');
 const { isNewer } = require('../shared/version');
-const { readKernelVersion, resolvePackagedKernel } = require('../shared/kernel-paths');
+const { NODE_BIN, kernelPaths, readKernelVersion, resolvePackagedKernel } = require('../shared/kernel-paths');
 const { prepareActivationPatch } = require('../shared/activation-patch');
 const { reconcileProfilePlugins } = require('../shared/profile-plugins-installer');
 
@@ -25,8 +25,8 @@ const VERIFY_SETTLE_MS = 1500;
  * 内核独立热更新器：检查 npm registry、下载新版 @deepseek-ai/dsh 到用户可写
  * 目录，重装自定义插件，校验可启动后原子切换。全程只读内置内核作为兜底。
  *
- * 目录约定（与内置内核 layout 一致）：
- *   <kernelDir>/node.exe
+ * 目录约定（与内置内核 layout 一致，定义在 src/shared/kernel-paths.js）：
+ *   <kernelDir>/<NODE_BIN>
  *   <kernelDir>/runtime/node_modules/@deepseek-ai/dsh/lib/bin.js
  */
 class KernelUpdater extends EventEmitter {
@@ -215,8 +215,8 @@ class KernelUpdater extends EventEmitter {
     fs.rmSync(staging, { recursive: true, force: true });
     fs.mkdirSync(path.join(staging, 'runtime'), { recursive: true });
 
-    // node.exe 与内置内核保持一致（内核 node 版本通常随应用发布，无需单独更新）。
-    fs.copyFileSync(this.builtinNodeExe, path.join(staging, 'node.exe'));
+    // node 可执行文件与内置内核保持一致（内核 node 版本通常随应用发布，无需单独更新）。
+    fs.copyFileSync(this.builtinNodeExe, path.join(staging, NODE_BIN));
 
     await this._pnpmInstall(staging, version);
     // 插件不再拷进内核：它们住在用户 profile 里，换内核不影响它们，所以这里
@@ -385,8 +385,7 @@ class KernelUpdater extends EventEmitter {
    * 结束。这样能覆盖「依赖树完整 + 插件激活」的完整加载路径，而不只是读版本号。
    */
   async _verify(kernelDir, version) {
-    const nodeExe = path.join(kernelDir, 'node.exe');
-    const binJs = path.join(kernelDir, 'runtime', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
+    const { nodeExe, binJs } = kernelPaths(kernelDir);
     // 用隔离的 DSH_HOME 自检，避免与正在运行的主内核并发读写用户 profile。
     const verifyHome = path.join(path.dirname(kernelDir), '.verify-home');
     fs.rmSync(verifyHome, { recursive: true, force: true });
@@ -415,6 +414,9 @@ class KernelUpdater extends EventEmitter {
     const child = spawn(nodeExe, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      // 见 DshService 里的同名注释：非 win32 上开独立进程组，stopChild 才能把
+      // 内核自己 spawn 的子进程（node-pty shell、pnpm）一并杀掉，不留孤儿。
+      detached: process.platform !== 'win32',
       env: { ...process.env, DSH_HOME: verifyHome, DSH_DESKTOP_VERIFY: '1' },
     });
 
@@ -439,6 +441,9 @@ class KernelUpdater extends EventEmitter {
       try {
         if (process.platform === 'win32' && child.pid) {
           execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], () => {});
+        } else if (child.pid) {
+          // 对 -pid（负数）发信号 = 发给整个进程组，而不只是这一个进程。
+          process.kill(-child.pid, 'SIGTERM');
         } else {
           child.kill();
         }

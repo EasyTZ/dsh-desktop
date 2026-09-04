@@ -29,11 +29,11 @@ const require = createRequire(import.meta.url);
 const { URL_LINE_RE, URL_LINE_TIMEOUT_MS, waitUrlLine, waitHttpReady } = require('../src/shared/kernel-boot.js');
 const { findDshInstallSync } = require('../src/shared/dsh-locate.js');
 const { reconcileProfilePlugins } = require('../src/shared/profile-plugins-installer.js');
+const { kernelPaths } = require('../src/shared/kernel-paths.js');
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const kernelDir = join(root, 'kernel');
-const nodeExe = join(kernelDir, 'node.exe');
-const binJs = join(kernelDir, 'runtime', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
+const { nodeExe, binJs } = kernelPaths(kernelDir);
 
 /** 启动到就绪的上限。冷启动要加载整棵 plugin tree，几秒是常态。 */
 const READY_TIMEOUT_MS = 90_000;
@@ -45,7 +45,7 @@ function fail(message, detail) {
 }
 
 if (!existsSync(nodeExe) || !existsSync(binJs)) {
-  fail(`内核不完整（缺 node.exe 或 bin.js）：${kernelDir}`);
+  fail(`内核不完整（缺 node 可执行文件或 bin.js）：${kernelDir}`);
 }
 
 auditEntryPoints(join(kernelDir, 'runtime', 'node_modules', '@deepseek-ai', 'dsh'), findDshInstallSync());

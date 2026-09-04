@@ -14,6 +14,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { extractUstar, needsUnpack, resolveTarCommand, ARCHIVE_NAME } = require('../src/shared/kernel-unpack');
+const { NODE_BIN } = require('../src/shared/kernel-paths');
 
 /** 造一棵覆盖各种边界的小树。 */
 function makeSourceTree(root) {
@@ -104,14 +105,94 @@ test('内置解包器：拒绝越界路径（tar 穿越）', async () => {
   }
 });
 
+/**
+ * 手搓一个只含单个普通文件的 ustar 归档。
+ *
+ * mode 用**字符串**传而不是数字：要能造出「字段全空」这种真实 tar 不会产出、但
+ * 兜底解包器必须扛得住的畸形输入（见下面 mode=0 那个用例）。
+ * @param {string} dir 归档落盘目录
+ * @param {{name: string, content: Buffer, modeField?: string}} entry
+ */
+function makeUstarArchive(dir, { name, content, modeField }) {
+  const header = Buffer.alloc(512, 0);
+  header.write(name, 0, 'utf8');                                                  // name
+  if (modeField) header.write(modeField, 100, 'utf8');                            // mode
+  header.write(`${content.length.toString(8).padStart(11, '0')}\0`, 124, 'utf8'); // size
+  header[156] = 0x30;                                                             // typeflag '0'
+  header.write('ustar\0', 257, 'utf8');
+  header.write('00', 263, 'utf8');
+  // 算校验和时 checksum 字段本身按 8 个空格计。
+  header.write('        ', 148, 'utf8');
+  let sum = 0;
+  for (const byte of header) sum += byte;
+  header.write(sum.toString(8).padStart(6, '0') + '\0 ', 148, 'utf8');
+
+  const padding = Buffer.alloc(content.length % 512 === 0 ? 0 : 512 - (content.length % 512), 0);
+  const archive = path.join(dir, `${name}.tar`);
+  // 末尾两个全 0 块 = 归档结束标记。
+  fs.writeFileSync(archive, Buffer.concat([header, content, padding, Buffer.alloc(1024, 0)]));
+  return archive;
+}
+
+test('内置解包器：保留 ustar 头里的执行位（真 bug：Windows 上一直没读这个字段）', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-unpack-mode-'));
+  const out = path.join(tmp, 'out');
+  fs.mkdirSync(out, { recursive: true });
+  try {
+    const content = Buffer.from('#!/bin/sh\necho hi\n');
+    // 真实内核树里 node / rg 就是 0755，而 fsp.open(dest, 'w') 给的是 umask 权限
+    // （通常 0644）。不 chmod 就少执行位，POSIX 上内核直接起不来。
+    const archive = makeUstarArchive(tmp, { name: 'exec-me', content, modeField: '000755 \0' });
+
+    await extractUstar(archive, out);
+
+    const dest = path.join(out, 'exec-me');
+    assert.deepStrictEqual(fs.readFileSync(dest), content);
+    if (process.platform === 'win32') {
+      // win32 上 chmod 被刻意跳过（那边只能切只读位，帮不上忙还会误伤 0444 条目），
+      // 这里只能确认解包本身没被搞炸。执行位是否真的保留留给 Linux CI 判定。
+      assert.ok(fs.existsSync(dest));
+    } else {
+      const mode = fs.statSync(dest).mode & 0o777;
+      assert.strictEqual(mode, 0o755, `执行位应被保留，实际 ${mode.toString(8)}`);
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('内置解包器：mode 字段读不出来时不 chmod（chmod 0 会让文件谁都读不了）', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-unpack-mode0-'));
+  const out = path.join(tmp, 'out');
+  fs.mkdirSync(out, { recursive: true });
+  try {
+    const content = Buffer.from('data\n');
+    // mode 字段留空 → readOctal 返回 0。真实 tar 不会这么写，但兜底解包器存在的
+    // 理由就是应对意外归档；照着 0 去 chmod 会把文件权限抹成 000，内核换一种方式
+    // 坏掉、而且报错完全指不到解包这一步。
+    const archive = makeUstarArchive(tmp, { name: 'no-mode', content });
+
+    await extractUstar(archive, out);
+
+    const dest = path.join(out, 'no-mode');
+    // 关键断言：还读得出来。权限具体是多少无所谓（取决于 umask），不能是 000。
+    assert.deepStrictEqual(fs.readFileSync(dest), content);
+    if (process.platform !== 'win32') {
+      assert.notStrictEqual(fs.statSync(dest).mode & 0o777, 0, '权限被抹成 000 了');
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('needsUnpack：有归档且内核不完整才要解包', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-needs-'));
   try {
     assert.strictEqual(needsUnpack(tmp), false, '什么都没有时不该解包');
     fs.writeFileSync(path.join(tmp, ARCHIVE_NAME), 'x');
     assert.strictEqual(needsUnpack(tmp), true, '有归档、内核不完整 → 要解包');
-    // 补齐成一个「完整内核」的样子（node.exe + bin.js），归档就该被忽略
-    fs.writeFileSync(path.join(tmp, 'node.exe'), 'x');
+    // 补齐成一个「完整内核」的样子（node 可执行文件 + bin.js），归档就该被忽略
+    fs.writeFileSync(path.join(tmp, NODE_BIN), 'x');
     const binDir = path.join(tmp, 'runtime', 'node_modules', '@deepseek-ai', 'dsh', 'lib');
     fs.mkdirSync(binDir, { recursive: true });
     fs.writeFileSync(path.join(binDir, 'bin.js'), 'x');

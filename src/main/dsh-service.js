@@ -30,7 +30,29 @@ const MAX_BIND_RETRIES = 3;
 // 崩溃」的窗口期；不等这一会儿就会把正在崩溃的内核当成就绪。
 const READY_SETTLE_MS = 700;
 
-
+/**
+ * 给内核**整棵进程树**发信号（仅非 win32）。
+ *
+ * 内核自己还会 spawn node-pty 的 shell、pnpm 等子进程。POSIX 上信号默认只送到直接
+ * 子进程，那些孙进程会变成孤儿、占着端口不放。spawn 时带了 `detached`，于是
+ * `child.pid` 就是进程组组长，对 **-pid（负数）** 发信号才能打到整棵树。
+ *
+ * 拿不到 pid、或进程组已经不在（ESRCH）时退回只杀直接子进程 —— 聊胜于无，而且这
+ * 条路径上抛异常没有任何好处：调用方都是「正在收摊」的场景。
+ *
+ * Windows 不走这里：那边要用 `taskkill /T` 才是按进程树杀，见 stop()。
+ *
+ * @param {import('node:child_process').ChildProcess} child
+ * @param {NodeJS.Signals} signal
+ */
+function signalTree(child, signal) {
+  try {
+    if (child.pid) process.kill(-child.pid, signal);
+    else child.kill(signal);
+  } catch {
+    try { child.kill(signal); } catch {}
+  }
+}
 
 /**
  * Owns the `dsh web` child process: resolves the node binary + dsh bin.js for
@@ -115,7 +137,11 @@ class DshService extends EventEmitter {
     this.#stdoutBuffer = '';
     if (child) {
       child.removeAllListeners('exit');
-      child.kill();
+      // 这里也要按进程树杀：走到这一步时内核已经 boot 了一会儿，很可能已经拉起了
+      // node-pty 的 shell。只杀直接子进程会留下孤儿**占着端口**——而端口正是这条
+      // fallback 要解决的问题，留个孤儿等于自己给自己下绊子。
+      if (process.platform === 'win32') child.kill();
+      else signalTree(child, 'SIGTERM');
     }
     void this.#launch();
   }
@@ -170,6 +196,11 @@ class DshService extends EventEmitter {
     this.child = spawn(nodeExe, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      // 非 win32 上开独立进程组：内核自己还会 spawn node-pty 的 shell、pnpm 等
+      // 子进程，SIGTERM 默认只送到直接子进程，那些孙进程会变成孤儿、占着端口
+      // 不放。detached 让 child.pid 成为组长，stop() 里对 -pid 发信号能打到
+      // 整棵树。Windows 走 taskkill /T 已经是按进程树杀的，不需要这个。
+      detached: process.platform !== 'win32',
       // 打上唯一标记：桌面版内核进程可据此与网页版/其他实例精确区分，
       // 避免后续清理进程时误杀正在开发它的 agent 自己。
       // DSH_DESKTOP_SAFE_MODE 让插件管理面板知道自己正跑在安全模式下，好在 UI 上
@@ -362,10 +393,16 @@ class DshService extends EventEmitter {
           }
         });
       } else {
-        child.kill('SIGTERM');
+        signalTree(child, 'SIGTERM');
       }
       const t = setTimeout(() => {
-        try { if (child.exitCode === null) child.kill('SIGKILL'); } catch {}
+        if (child.exitCode === null) {
+          if (process.platform === 'win32') {
+            try { child.kill('SIGKILL'); } catch {}
+          } else {
+            signalTree(child, 'SIGKILL');
+          }
+        }
         resolve();
       }, 3000);
       if (t.unref) t.unref();

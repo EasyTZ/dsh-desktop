@@ -1,4 +1,4 @@
-// 把 node.exe + pnpm + 完整 dsh 依赖树拷到 kernel/ 暂存目录，供 electron-builder
+// 把 node 可执行文件 + pnpm + 完整 dsh 依赖树拷到 kernel/ 暂存目录，供 electron-builder
 // 的 extraResources 打进安装包，实现自包含内核。
 //
 // 目录约定（runtime/ 这层子目录不能省，原因见该文件注释）统一定义在
@@ -11,12 +11,13 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statS
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findDshInstallSync, findPnpmDirSync } from '../src/shared/dsh-locate.js';
+import { NODE_BIN } from '../src/shared/kernel-paths.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = join(root, 'kernel');
 const outDsh = join(outDir, 'runtime', 'node_modules', '@deepseek-ai', 'dsh');
 
-/** 打包进内核的 node.exe：默认用当前正在运行的 node（一定存在且版本已知）。 */
+/** 打包进内核的 node 可执行文件：默认用当前正在运行的 node（一定存在且版本已知）。 */
 function findNodeExe() {
   const override = process.env.DSH_NODE_EXE;
   if (override && existsSync(override)) return override;
@@ -66,7 +67,7 @@ if (!expectedKernel) {
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(join(outDir, 'runtime', 'node_modules', '@deepseek-ai'), { recursive: true });
-cpSync(nodeExe, join(outDir, 'node.exe'));
+cpSync(nodeExe, join(outDir, NODE_BIN));
 cpSync(pnpmDir, join(outDir, 'pnpm'), { recursive: true, dereference: true });
 cpSync(installDir, outDsh, { recursive: true, dereference: true });
 

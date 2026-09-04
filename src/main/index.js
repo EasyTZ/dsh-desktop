@@ -98,7 +98,7 @@ if (!gotLock) {
   // 目录的话，应用一升级那条依赖就悬空，此后所有插件都装不上也卸不掉。
   process.env.DSH_DESKTOP_PROFILE_DIST = PROFILE_DIST_DIR;
   const PNPM_STORE_DIR = path.join(app.getPath('userData'), 'pnpm-store');
-  const BUILTIN_NODE_EXE = path.join(BUILTIN_KERNEL_DIR, 'node.exe');
+  const BUILTIN_NODE_EXE = kernelPaths(BUILTIN_KERNEL_DIR).nodeExe;
 
   /**
    * 弃用损坏的用户内核：**改名，不是删除**。
