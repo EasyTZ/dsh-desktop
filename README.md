@@ -5,7 +5,7 @@
 **双击即用 —— 不需要装 Node.js，不需要懂命令行。**
 
 <p align="center">
-  <a href="https://github.com/EasyTZ/dsh-desktop/releases/latest"><img alt="下载最新版" src="https://img.shields.io/github/v/release/EasyTZ/dsh-desktop?style=for-the-badge&label=下载最新版&color=4d6bfe"></a>
+  <a href="https://github.com/EasyTZ/dsh-desktop/releases/latest"><img alt="下载最新版" src="https://img.shields.io/github/v/release/EasyTZ/dsh-desktop?style=for-the-badge&label=%E4%B8%8B%E8%BD%BD%E6%9C%80%E6%96%B0%E7%89%88&color=4d6bfe"></a>
   <img alt="Windows" src="https://img.shields.io/badge/Windows-x64-1674d1?style=for-the-badge&logo=windows11&logoColor=white">
   <img alt="macOS" src="https://img.shields.io/badge/macOS-Apple%20Silicon-111111?style=for-the-badge&logo=apple&logoColor=white">
   <img alt="Linux" src="https://img.shields.io/badge/Linux-x64-f6b73c?style=for-the-badge&logo=linux&logoColor=111111">

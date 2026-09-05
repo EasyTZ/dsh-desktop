@@ -1,6 +1,6 @@
 {
   "name": "deepseek-desktop",
-  "version": "1.7.6",
+  "version": "1.7.7",
   "description": "DeepSeek Harness 桌面版 —— 以 dsh 为内核的 Windows 桌面应用",
   "main": "src/main/index.js",
   "author": "EasyTZ",
@@ -25,7 +25,7 @@
   },
   "dependencies": {
     "@easytz/dsh-git": "github:EasyTZ/dsh-git#v0.5.6",
-    "@easytz/dsh-market": "github:EasyTZ/dsh-market#v1.5.1",
+    "@easytz/dsh-market": "github:EasyTZ/dsh-market#v1.6.0",
     "@easytz/dsh-reveal-explorer": "github:EasyTZ/dsh-reveal-explorer#v0.2.4",
     "@easytz/dsh-terminal-panel": "github:EasyTZ/dsh-terminal-panel#v0.2.7",
     "@easytz/dsh-ui-balance": "github:EasyTZ/dsh-ui-balance#v0.6.7"

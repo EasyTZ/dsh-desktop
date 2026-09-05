@@ -200,4 +200,19 @@ contextBridge.exposeInMainWorld('desktop', {
   // 插件管理面板（dsh 插件，跑在页面主世界）用这个入口触发「重启生效」。
   // 插件自己碰不到 Electron API，只能经这层薄桥进主进程。
   restartApp: () => ipcRenderer.send('app:restart'),
+  // 设置面板「桌面版」分区（dsh-market 插件，见其 DesktopSection/DesktopUpdateAction）
+  // 用这三个入口查/开外壳自身的更新、查内核更新——同样是插件碰不到 Electron API，
+  // 只能经这层薄桥。getAppUpdateState 只读主进程内存里的结果（不发请求），
+  // checkAppUpdate 是真去 GitHub 查一遍，两者对应 app-updater.js 的节流设计
+  // （见该文件顶部注释）：轮询用前者，用户主动点「检查」/ 打开分区用后者。
+  getAppUpdateState: () => ipcRenderer.invoke('app-update:get-state'),
+  checkAppUpdate: () => ipcRenderer.invoke('app-update:check'),
+  openAppUpdate: () => ipcRenderer.send('app-update:open'),
+  // 内核更新跟外壳更新是两件事，但设置面板里的按钮想要同一种「查一下、按结果
+  // 换文案」的交互：checkKernelUpdate 只查状态，不弹窗；真要更新时点按钮再
+  // openKernelUpdater 打开更新中心窗口——下载/安装/重启这些有进度、会失败的
+  // 步骤，交给那个窗口已有的 UI 走，不在设置面板里重做一遍。
+  checkKernelUpdate: () => ipcRenderer.invoke('kernel-update:check'),
+  // 跟托盘「检查内核更新」菜单项走的是同一个处理函数（openUpdater）。
+  openKernelUpdater: () => ipcRenderer.send('kernel:check-update'),
 });

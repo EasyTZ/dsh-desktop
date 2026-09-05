@@ -93,7 +93,7 @@ async function unpackKernel(opts) {
   }
 
   const started = Date.now();
-  onStatus?.('正在准备内核（仅首次，约需十几秒）…');
+  onStatus?.('首次启动，正在准备 DeepSeek Harness 及插件（约十几秒）…');
 
   let method = /** @type {'tar'|'builtin'} */ ('tar');
   try {

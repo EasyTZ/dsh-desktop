@@ -591,6 +591,28 @@ if (!gotLock) {
   // relaunch，理由见 restartApp 的注释）。
   ipcMain.on('app:restart', restartApp);
 
+  // 设置面板「更新」分区（dsh-market 插件）的几个入口，见 preload/index.js
+  // 的注释：get-state 只读内存、check 真的去查一遍、open 复用托盘同一个
+  // openAppUpdate。跟托盘/maybeAutoCheckAppUpdate 共用同一个 appUpdateChecker
+  // 实例，节流状态（24h、每版本只通知一次）自然也是共用的，不会因为多了个
+  // 入口就被绕开。
+  ipcMain.handle('app-update:get-state', () => (appUpdateChecker ? appUpdateChecker.getState() : { phase: 'idle', latestVersion: null, releaseUrl: null, error: null }));
+  ipcMain.handle('app-update:check', async () => {
+    if (!appUpdateChecker) return { phase: 'idle', latestVersion: null, releaseUrl: null, error: null };
+    const state = await appUpdateChecker.check();
+    if (state.phase === 'available' && state.latestVersion) {
+      appUpdateInfo = { version: state.latestVersion, url: state.releaseUrl };
+      refreshDesktopMenus();
+    }
+    return state;
+  });
+  ipcMain.on('app-update:open', openAppUpdate);
+  // 只查状态、不开窗口——设置面板「更新」分区用它决定按钮文案（有更新 vs
+  // 已是最新），跟 app-update:check 是同一种交互，只是数据源换成内核更新器。
+  ipcMain.handle('kernel-update:check', () => (updater ? updater.check() : { phase: 'idle', currentVersion: null, latestVersion: null, error: null }));
+  // 跟托盘「检查内核更新」菜单项完全同一个函数：弹更新中心窗口 + 立即查一遍。
+  ipcMain.on('kernel:check-update', openUpdater);
+
   app.on('second-instance', () => {
     if (win && !win.isDestroyed()) showWindow();
     else if (splash && !splash.isDestroyed()) splash.focus();
@@ -620,7 +642,7 @@ if (!gotLock) {
         logger: console,
         onStatus: setSplashStatus,
       });
-      setSplashStatus('正在启动内核…');
+      setSplashStatus('正在启动 DeepSeek Harness…');
       if (result.usedFallback) {
         console.warn(`[app] 出厂内核解到了用户目录：${result.dir}`);
       }
