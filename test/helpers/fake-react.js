@@ -27,6 +27,7 @@ function createFakeReact() {
   let cursor = 0;
   let dirty = false;
   const effects = [];
+  const layoutEffects = [];
   const hooks = {
     useState(init) {
       const i = cursor++;
@@ -39,6 +40,13 @@ function createFakeReact() {
     },
     useCallback: (fn) => fn,
     useEffect(fn, deps) { effects.push({ fn, deps }); },
+    // 真 React 里 layout effect 与 passive effect 的差别是**时机**：前者在 DOM
+    // 变更后、浏览器绘制前同步跑（用来量尺寸，避免先闪一下再跳），后者在绘制后
+    // 异步跑。这个假实现里没有真正的绘制，唯一还成立、也唯一可能被依赖的语义是
+    // **layout 先于 passive** —— 所以单独攒一队、在下面先跑，而不是直接
+    // `useLayoutEffect: useEffect` 混进同一队。混了的话顺序取决于组件里的调用
+    // 次序，测出来的东西就跟真实行为对不上了。
+    useLayoutEffect(fn, deps) { layoutEffects.push({ fn, deps }); },
     useMemo: (fn) => fn(),
     useRef(init) {
       const i = cursor++;
@@ -73,12 +81,14 @@ function createFakeReact() {
       cursor = 0;
       dirty = false;
       effects.length = 0;
+      layoutEffects.length = 0;
       last = deepRender(renderOnce());
       // **别在这里调 teardown**。面板的每个取数 effect 都用 `let alive = true` +
       // teardown 里置 false 来防竞态，立刻 teardown 等于让所有 `.then` 直接 return，
       // 状态永远停在 loading —— 那正是这个测试最想避免的空壳。攒着，最后一起清。
       const seen = new Set();
-      for (const { fn } of effects) {
+      // layout 先于 passive，跟真 React 一致（见 useLayoutEffect 处的注释）。
+      for (const { fn } of [...layoutEffects, ...effects]) {
         if (seen.has(fn)) continue;
         seen.add(fn);
         const teardown = fn();

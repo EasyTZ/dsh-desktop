@@ -148,6 +148,51 @@ jobs:
           version=$(node -p "require('./kernel/runtime/node_modules/@deepseek-ai/dsh/package.json').version")
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      # 挂载刚打出来的 dmg，把「这轮 CI 上能查到的」全查一遍。
+      #
+      # 为什么值得单开一步：macos runner **本身就是一台真的 Apple Silicon Mac**，
+      # codesign / hdiutil 都能跑。把签名状态和包内结构在这里查掉，借来的 Mac 上
+      # 就只剩「Gatekeeper 的真实观感」和「Hardened Runtime 要不要开」这两条真正
+      # 非人不可的事，不用浪费借机时间去发现本来就能自动发现的问题。
+      - name: 校验 dmg 内容与签名
+        shell: bash
+        run: |
+          set -euo pipefail
+          DMG=$(ls release/*.dmg)
+          echo "::group::挂载 $DMG"
+          MNT=$(mktemp -d)
+          hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$MNT"
+          APP="$MNT/$(ls "$MNT" | grep '\.app$' | head -1)"
+          echo "app = $APP"
+          echo "::endgroup::"
+
+          echo "::group::包内结构"
+          RES="$APP/Contents/Resources"
+          # 内核必须是**目录树**而不是 kernel.tar —— 就地解包会破坏 .app 签名，
+          # 而 arm64 上签名失效等于起不来（见 docs/decisions/multiplatform.md）。
+          test -d "$RES/kernel/runtime/node_modules/@deepseek-ai/dsh" \
+            || { echo "内核不是展开的目录树"; exit 1; }
+          test ! -f "$RES/kernel/kernel.tar" || { echo "不该有 kernel.tar"; exit 1; }
+          test -x "$RES/kernel/node" || { echo "内核 node 缺失或不可执行"; exit 1; }
+          echo "内核 node: $(file -b "$RES/kernel/node" | head -c 80)"
+          TGZ=$(ls "$RES/plugins/profile"/*.tgz | wc -l | tr -d ' ')
+          echo "随包插件 tgz: $TGZ 个"
+          test "$TGZ" = "5" || { echo "插件数量不对，应为 5"; exit 1; }
+          test -f "$RES/iconTemplate.png" || { echo "缺 mac 托盘 template 图"; exit 1; }
+          echo "::endgroup::"
+
+          echo "::group::签名状态"
+          # 这两条回答的是「真机验证清单」的第 1、2 项。--verify 不过就直接失败：
+          # 签不上的包在 Apple Silicon 上根本起不来，发出去比构建失败糟糕得多。
+          codesign -dv --verbose=4 "$APP" 2>&1 | head -20
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          echo "--- 内核里的原生件是否也签上了 ---"
+          codesign -dv "$RES/kernel/node" 2>&1 | grep -E "Signature|Identifier" || true
+          echo "::endgroup::"
+
+          hdiutil detach "$MNT" -quiet
+          echo "dmg 校验通过"
+
       - name: 上传 macOS 产物
         uses: actions/upload-artifact@v5
         with:
