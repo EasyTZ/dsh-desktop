@@ -1,0 +1,23 @@
+#!/bin/sh
+# 剥掉提交消息末尾的机器署名 trailer（Co-Authored-By / Generated with ...）。
+#
+# 为什么要有这个钩子：本仓库的提交消息只描述改动，不带任何署名 trailer。这是
+# 仓库策略，而写提交消息的工具（人或 AI 助手）各有各的默认行为，靠约定约束不住 ——
+# 已经漏进来 15 条了。放在 commit-msg 这一层是唯一能保证「无论谁怎么写都生效」
+# 的位置。
+#
+# 启用（每份克隆各做一次，git config 不随仓库走）：
+#     git config core.hooksPath .githooks
+#
+# 只剥机器署名。人类协作者的 Co-Authored-By 是有意义的，别误伤 —— 所以匹配的是
+# 具体的机器邮箱域，不是 `Co-Authored-By` 这个词本身。
+set -e
+
+MSG="$1"
+TMP="$MSG.stripped"
+
+grep -viE '^(Co-Authored-By:.*(anthropic\.com|noreply@github\.com>.*\[bot\])|🤖 Generated with )' "$MSG" > "$TMP" || true
+
+# 剥完往往会在末尾留下空行，一并收掉（保留正文内部的空行）。
+awk 'BEGIN{n=0} {lines[NR]=$0} END{last=NR; while(last>0 && lines[last] ~ /^[[:space:]]*$/) last--; for(i=1;i<=last;i++) print lines[i]}' "$TMP" > "$MSG"
+rm -f "$TMP"

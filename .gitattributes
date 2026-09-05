@@ -1,0 +1,7 @@
+# git 钩子必须是 LF + 可执行。
+#
+# 本仓库在 Windows 上开发，`core.autocrlf=true` 会把签出的文本文件转成 CRLF ——
+# 而 shell 脚本每行末尾多一个 \r，sh 会把它当成命令的一部分，钩子直接报错。
+# 可执行位同理：Windows 上 core.filemode 是 false，`chmod +x` 不会被 git 记录，
+# 需要 `git update-index --chmod=+x` 显式打上（已打）。
+.githooks/** text eol=lf

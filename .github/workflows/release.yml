@@ -211,6 +211,13 @@ jobs:
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
+      # 检出必须排在下载产物**之前**：actions/checkout 默认 `clean: true`，进去
+      # 就是一发 `git clean -ffdx`，会把 release/ 这种未跟踪目录连锅端掉。顺序反了
+      # 的话产物下完就没了，而 action-gh-release 对空 glob 不报错——发出去的
+      # Release 会一个文件都没有。检出本身只为拿 CHANGELOG 和 release-notes.mjs。
+      - name: 检出代码（取 CHANGELOG）
+        uses: actions/checkout@v5
+
       - name: 下载 Windows 产物
         uses: actions/download-artifact@v5
         with:
@@ -242,11 +249,60 @@ jobs:
             exit 1
           fi
 
+      # 发布说明取 CHANGELOG 里对应版本那一节，而不是只写一句「详见 CHANGELOG」：
+      # Release 页面是大多数人唯一会看的地方，把人再踢回仓库翻一遍没道理。
+      # 版本号由 tag 推出来，CHANGELOG 里没有对应那节就直接中止——发布说明写错
+      # 版本比没有说明更糟。
+      - name: 生成发布说明
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          node scripts/release-notes.mjs "$VERSION" > /tmp/release-notes.md
+          # CHANGELOG 里那句内核版本是手写的，可能写漏、写错；这一行是从产物里
+          # 读出来的**实际**版本，两者不是重复，出现不一致时以这一行为准。
+          {
+            echo ""
+            echo "> 本次构建实际打进包的内核：dsh ${{ needs.build-windows.outputs.kernel-version }}（三平台一致）"
+          } >> /tmp/release-notes.md
+          echo "::group::发布说明预览"
+          cat /tmp/release-notes.md
+          echo "::endgroup::"
+
       - name: 发布到 Release
         uses: softprops/action-gh-release@v2
         with:
           files: release/*
-          body: |
-            本次内置内核：dsh ${{ needs.build-windows.outputs.kernel-version }}
+          body_path: /tmp/release-notes.md
 
-            完整更新日志见 [CHANGELOG.md](https://github.com/EasyTZ/dsh-desktop/blob/main/CHANGELOG.md)。
+      # 只留最新这一个 Release，旧的删掉；**tag 一律保留**。
+      #
+      # 为什么删 Release：每版三个平台的产物加起来将近 1GB，攒几版仓库就很可观，
+      # 而用户该拿的永远是最新版——旧版安装包留着只会让人下错。
+      # 为什么保留 tag：tag 是构建凭据，删了就再也没法从某个历史版本重新出包，
+      # 而 tag 本身不占空间。`gh release delete` 默认就不动 tag（要删得显式加
+      # --cleanup-tag），正是这里想要的行为。
+      #
+      # 排在发布之后：先确保新版真的发出去了，再清旧的。
+      - name: 清理旧 Release（保留 tag）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEEP="$GITHUB_REF_NAME"
+          echo "保留：$KEEP"
+          # `|| true` 不能省：只有一个 Release 时 grep 过滤后没有任何输出、退出码
+          # 是 1，配上 pipefail 会让这一步失败——而「没有旧版要清」恰恰是正常情况。
+          OLD=$(gh release list --limit 100 --json tagName --jq '.[].tagName' | grep -vx "$KEEP" || true)
+          if [ -z "$OLD" ]; then
+            echo "没有旧 Release 需要清理"
+          else
+            echo "$OLD" | while read -r tag; do
+              [ -z "$tag" ] && continue
+              echo "删除旧 Release：$tag（tag 保留）"
+              gh release delete "$tag" --yes
+            done
+          fi
+          echo "剩余 Release："
+          gh release list --limit 20
