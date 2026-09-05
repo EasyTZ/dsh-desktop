@@ -11,6 +11,14 @@ const http = require('node:http');
 // 是同一条正则（两边都在解析同一个上游输出，格式一变要一起改）。
 const URL_LINE_RE = /dsh web:\s+(https?:\/\/\S+)/;
 // 等这行出现的上限。超时说明内核连端口都没绑上，多半是启动阶段就崩了。
+//
+// 20 秒是**面向用户**的取舍：超时后 DshService 会退回「自己探端口」的老做法，
+// 而这段时间用户正对着闪屏等，不能太长（见 dsh-service.js 的
+// #fallbackToExplicitPort 注释）。
+//
+// **构建期自检不用这个值**：scripts/verify-kernel.mjs 有自己的、宽松得多的预算。
+// 那边超时的后果是「构建失败」而不是「用户多等几秒」，CI runner 比开发机慢一截，
+// 拿面向用户的紧预算去卡构建只会换来一堆假红。理由写在那个文件里。
 const URL_LINE_TIMEOUT_MS = 20000;
 
 /**
@@ -27,7 +35,11 @@ function waitUrlLine(urlState, exitState, timeoutMs) {
     const attempt = () => {
       if (urlState.value) return resolve(urlState.value);
       if (exitState.value !== null) return reject(new Error('进程在打印地址行之前退出'));
-      if (Date.now() > deadline) return reject(new Error('等不到内核打印地址行'));
+      // 报错带上等了多久：这个值在运行时与构建期是两套预算，不写出来的话，
+      // 看日志的人根本判断不出「是内核真的挂了」还是「预算给少了」。
+      if (Date.now() > deadline) {
+        return reject(new Error(`等不到内核打印地址行（等了 ${(timeoutMs / 1000).toFixed(0)}s）`));
+      }
       setTimeout(attempt, 100);
     };
     attempt();

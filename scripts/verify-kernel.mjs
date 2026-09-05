@@ -31,7 +31,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const { URL_LINE_RE, URL_LINE_TIMEOUT_MS, waitUrlLine, waitHttpReady } = require('../src/shared/kernel-boot.js');
+const { URL_LINE_RE, waitUrlLine, waitHttpReady } = require('../src/shared/kernel-boot.js');
 const { reconcileProfilePlugins } = require('../src/shared/profile-plugins-installer.js');
 const { kernelPaths } = require('../src/shared/kernel-paths.js');
 
@@ -41,6 +41,23 @@ const { nodeExe, binJs } = kernelPaths(kernelDir);
 
 /** 启动到就绪的上限。冷启动要加载整棵 plugin tree，几秒是常态。 */
 const READY_TIMEOUT_MS = 90_000;
+
+/**
+ * 等地址行的上限。**刻意不用 kernel-boot 的 URL_LINE_TIMEOUT_MS（20s）**。
+ *
+ * 那个值是面向用户的：超时后 DshService 退回自选端口，而用户正对着闪屏等，
+ * 所以必须短。这里超时的后果完全不同 —— **构建直接失败**。用一个紧预算去卡构建，
+ * 换来的只会是假红：本机在开着开发态应用时实测就撞到过一次 20s 超时，同一棵树
+ * 紧接着重跑两次分别是 6.4s 和 14.0s（14.0s 已经吃掉那个预算的七成），而 CI
+ * runner 通常比开发机更慢、更抖。
+ *
+ * 90s 与 READY_TIMEOUT_MS 取齐：两个阶段都是「构建期等内核起来」，没有理由给
+ * 不同的耐心。真卡死了也不会白等太久 —— waitUrlLine 在进程退出时立刻失败，
+ * 只有「进程活着但不吭声」才会走满预算，而那正是需要看清楚的情况。
+ *
+ * CI 上还想再放宽（或调紧来复现问题）用 DSH_VERIFY_URL_TIMEOUT_MS 覆盖。
+ */
+const URL_LINE_BUDGET_MS = Number(process.env.DSH_VERIFY_URL_TIMEOUT_MS) || 90_000;
 
 function fail(message, detail) {
   console.error(`[verify-kernel] 失败：${message}`);
@@ -105,7 +122,7 @@ child.on('exit', (code, signal) => { exitState.value = { code, signal }; });
 
 const started = Date.now();
 try {
-  const url = await waitUrlLine(urlState, exitState, URL_LINE_TIMEOUT_MS);
+  const url = await waitUrlLine(urlState, exitState, URL_LINE_BUDGET_MS);
   await waitHttpReady(url, READY_TIMEOUT_MS, () => exitState.value !== null);
   // 端口通了不代表 plugin tree 加载完成：dsh 先绑端口、后加载插件树，插件加载阶段
   // 崩溃时 HTTP 早就能应答了。观察一会儿，确认进程没有随后崩溃。
