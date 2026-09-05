@@ -60,6 +60,20 @@ jobs:
           $version = (Get-Content -Raw $pkgPath | ConvertFrom-Json).version
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
+      # 非 tag 的手动触发（调试用）没有 Release 可传，产物会随 runner 一起消失，
+      # 于是「跑绿了」之外什么都验不到 —— 而绿灯只证明构建没报错，不证明装出来
+      # 能跑。传成 Actions artifact，调试时能下下来真装一次。
+      #
+      # 只保留 7 天：这不是给终端用户下载的渠道（那是 Release），纯粹是调试残留，
+      # 而每份 370MB+，没必要占着默认的 90 天。
+      - name: 上传产物（仅手动调试时）
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-dist-${{ github.run_id }}
+          path: release/*
+          retention-days: 7
+
       # 只在真正由 tag 触发（push tag，或 workflow_dispatch 手动选了某个 tag）
       # 时才发布：手动从分支跑只是想验证打包本身能不能过，不该产生一个 Release。
       - name: 发布到 Release
