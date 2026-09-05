@@ -85,14 +85,17 @@ test('planProfileReconcile: required 插件被卸了要装回来，版本漂了�
   assert.deepStrictEqual(planProfileReconcile(desired, () => '0.9.9', { 'dsh-market': '0.9.9' }), desired);
 });
 
-test('planProfileReconcile: 非 required 只播种一次——用户卸载后不再装回来', () => {
-  // 这是整套机制里最要紧的一条。装回来的话「卸载」这个按钮就是假的：点完下次启动
-  // 它又回来了，比没有这个按钮更让人恼火。
+test('planProfileReconcile: 非 required 同版卸载后不重装，随包升级时重新播种默认插件', () => {
+  // 同一随包版本里，卸载必须生效；但新桌面版带来新版默认插件时，旧账本不能让
+  // 缺失的插件永远消失（尤其是旧版/联调留下的账本）。
   const desired = [{ packageName: 'dsh-git', version: '0.4.0', tarball: 't.tgz' }];
   // 从没播过种 → 播
   assert.deepStrictEqual(planProfileReconcile(desired, () => null, {}), desired);
-  // 播过种、现在没装 = 用户卸了 → 不动
+  // 同版播过种、现在没装 = 用户卸了 → 不动
   assert.deepStrictEqual(planProfileReconcile(desired, () => null, { 'dsh-git': '0.4.0' }), []);
+  // 随包升级、旧版播过种但现在没装 → 重新播种默认插件
+  const upgraded = [{ packageName: 'dsh-git', version: '0.5.0', tarball: 't.tgz' }];
+  assert.deepStrictEqual(planProfileReconcile(upgraded, () => null, { 'dsh-git': '0.4.0' }), upgraded);
 });
 
 test('planProfileReconcile: 播种过且还装着时，只升级不降级', () => {

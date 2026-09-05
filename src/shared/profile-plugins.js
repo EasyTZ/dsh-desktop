@@ -91,11 +91,14 @@ function loadProfilePluginIndex(dir) {
  * 卸不掉它（市场自己的保护名单挡着），装坏了下次启动自愈，应用回退时也跟着回退。
  * 判据是「不等就装」。
  *
- * **其余（随应用分发但用户自主管理的插件）**：**只播种一次**。第一次启动时装上，
- * 之后用户卸载了就**永远不再装回来** —— 否则「卸载」这个按钮是假的：点完下次启动
- * 它又回来了，比没有这个按钮更让人恼火。要区分「从没装过」和「装过但被卸了」，光看
+ * **其余（随应用分发但用户自主管理的插件）**：首次启动时装上；用户在**同一随包
+ * 版本**里卸载后，不会因为重启又回来。要区分「从没装过」和「装过但被卸了」，光看
  * profile 是看不出来的（两种情况下 `installedVersionOf` 都返回 null），所以必须有
  * 一本**播种账本**记「我们给这个 profile 播过哪些种」。
+ *
+ * 但桌面版带来**更新版本**时，缺失的默认插件要重新播种。否则旧账本会把开发联调
+ * `unlink`、历史安装失败或旧版遗留的缺包都误判成「用户卸载」，新版本永远补不回来。
+ * 用户若不需要新版插件，可以在这次版本里再卸载；账本升到新版后会继续尊重该选择。
  *
  * 已播种且仍装着的，只在**随包版本更新**时升级（`isNewer` 判断），不降级：用户可能
  * 自己从市场装了更新的版本，应用不该把它按回旧版。
@@ -132,7 +135,11 @@ function planProfileReconcile(desired, installedVersionOf, seeded = {}, isLinked
       plan.push(entry);          // 第一次见到这个 profile，播种
       continue;
     }
-    if (actual === null) continue; // 播过种但现在没装 = 用户卸了，尊重它
+    if (actual === null) {
+      // 同一随包版本缺失 = 用户刚卸了，尊重；随包升级后缺失 = 重新播种默认插件。
+      if (isNewer(entry.version, seeded[entry.packageName])) plan.push(entry);
+      continue;
+    }
     if (isNewer(entry.version, actual)) plan.push(entry); // 随包版本更新了，升上去
   }
   return plan;
