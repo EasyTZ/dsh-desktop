@@ -11,6 +11,7 @@ const { findFreePort } = require('../shared/net');
 const { findDshBinJsAsync } = require('../shared/dsh-locate');
 const { prepareActivationPatch } = require('../shared/activation-patch');
 const { isPortBindFailure, firstBindErrorLine } = require('../shared/error-detail');
+const { writeKernelPid, clearKernelPid } = require('../shared/orphan-kernel');
 const { withPnpmOnPath, profileDir } = require('../shared/profile-plugins-installer');
 
 /**
@@ -72,6 +73,9 @@ class DshService extends EventEmitter {
     // pnpm 垫片目录。由启动时的 profile 插件对账造出来后写进来（见 index.js），
     // 拿不到就是 null —— 那种情况下内核里的 `dsh plugin add` 退回碰运气用系统 pnpm。
     this.pnpmShimDir = opts.pnpmShimDir ?? null;
+    // 记「当前内核是谁」的文件。正常退出会删掉它，所以下次启动看到它还在，
+    // 就说明上次没善终、多半留了个孤儿内核（见 shared/orphan-kernel.js）。
+    this.kernelPidPath = opts.kernelPidPath ?? null;
     this.child = null;
     this.url = null;
     this.stopped = false;
@@ -212,6 +216,12 @@ class DshService extends EventEmitter {
         ...(this.safeMode ? { DSH_DESKTOP_SAFE_MODE: '1' } : {}),
       }, this.pnpmShimDir),
     });
+
+    // 落一份 pid 记录，给下次启动收拾残局用。带上 binJs：pid 会被系统回收再
+    // 分配，下次核对时必须确认那个 pid 的命令行确实指向同一个内核，才敢动手。
+    if (this.kernelPidPath && this.child.pid) {
+      writeKernelPid(this.kernelPidPath, { pid: this.child.pid, binJs }, this.logger);
+    }
 
     this.child.stdout.on('data', (d) => this.#scanStdout(d));
     this.child.stderr.on('data', (d) => {
@@ -384,6 +394,12 @@ class DshService extends EventEmitter {
     return new Promise((resolve) => {
       this.stopped = true;
       const child = this.child;
+      // 主动停内核 = 这次是善终，把 pid 记录清掉。**放在最前面**，不等真的杀完：
+      // 后面那条 3 秒兜底路径可能走到 SIGKILL，也可能整个进程在中途被系统带走，
+      // 谁都不保证 resolve 一定跑到。而这个标记的语义是「我们**打算**善终」——
+      // 记录留着的唯一后果是下次启动多做一次核对（核对不过就不会杀），
+      // 而漏删的后果是下次启动可能去动一个已经不归我们管的 pid。宁可早删。
+      if (this.kernelPidPath) clearKernelPid(this.kernelPidPath);
       if (!child || child.exitCode !== null) return resolve();
       child.once('exit', () => resolve());
       if (process.platform === 'win32') {

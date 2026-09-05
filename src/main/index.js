@@ -1,6 +1,7 @@
 'use strict';
 
 const { app, globalShortcut, ipcMain, dialog, shell } = require('electron');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { DshService } = require('./dsh-service');
@@ -15,6 +16,7 @@ const { needsUnpack, unpackKernel } = require('../shared/kernel-unpack');
 const { kernelPaths } = require('../shared/kernel-paths');
 const { showUpdaterWindow, hideUpdaterWindow, destroyUpdaterWindow } = require('./updater-window');
 const { reconcileProfilePlugins } = require('../shared/profile-plugins-installer');
+const { readKernelPid, clearKernelPid, shouldKillOrphan } = require('../shared/orphan-kernel');
 
 const APP_ID = 'com.deepseek.desktop';
 const ISSUES_URL = 'https://github.com/EasyTZ/dsh-desktop/issues/new/choose';
@@ -98,6 +100,9 @@ if (!gotLock) {
   // 目录的话，应用一升级那条依赖就悬空，此后所有插件都装不上也卸不掉。
   process.env.DSH_DESKTOP_PROFILE_DIST = PROFILE_DIST_DIR;
   const PNPM_STORE_DIR = path.join(app.getPath('userData'), 'pnpm-store');
+  // 「当前内核是谁」的记录。正常退出时 DshService.stop() 会删掉它，所以下次启动
+  // 看到它还在 = 上次没善终，多半留了个孤儿内核。见 sweepOrphanKernel。
+  const KERNEL_PID_PATH = path.join(app.getPath('userData'), 'kernel.pid.json');
   const BUILTIN_NODE_EXE = kernelPaths(BUILTIN_KERNEL_DIR).nodeExe;
 
   /**
@@ -139,6 +144,58 @@ if (!gotLock) {
           .then(() => console.log('[app] 已清理损坏内核残骸:', n))
           .catch((e) => console.warn('[app] 清理残骸失败:', n, e?.message ?? e)))))
       .catch(() => {});
+  };
+
+  /**
+   * 清掉上一次没善终留下的孤儿内核。跟 sweepDiscardedKernels 是同一类事
+   * （「上次没收拾干净的，这次顺手收拾」），所以放在一起、也在同一处调用。
+   *
+   * 机制与「为什么会有孤儿」见 src/shared/orphan-kernel.js 的头部注释。一句话：
+   * 内核在非 win32 上跑在独立会话里（detached），外壳异常退出时它收不到任何
+   * 信号，会被 init 收养、一直占着内存和一个回环端口。
+   *
+   * **只做 POSIX**。Windows 上 spawn 没带 detached，内核跟外壳同属一个控制台，
+   * 而且从来没观察到这个现象；那边要读别的进程的命令行还得走 WMI，为一个不存在
+   * 的问题引入这些不划算。
+   *
+   * 全程失败即静默：这是收拾残局的便利设施，任何一步不确定就什么都不做 ——
+   * **宁可漏杀，不可错杀**（pid 会被系统回收再分配）。
+   */
+  const sweepOrphanKernel = () => {
+    if (process.platform === 'win32') return;
+    const record = readKernelPid(KERNEL_PID_PATH);
+    if (!record) return; // 上次是善终的（文件被 stop() 删掉了），没什么好收拾
+
+    /** @type {string|null} */
+    let cmdline = null;
+    try {
+      // 先确认这个 pid 还活着（signal 0 只做权限/存在性检查，不真的发信号）。
+      process.kill(record.pid, 0);
+      // 再读它此刻的命令行 —— pid 可能早被回收给了别的进程，光"活着"远远不够。
+      // `ps -o command=` 在 Linux 与 macOS 上都有，比读 /proc 更通用。
+      cmdline = execFileSync('ps', ['-p', String(record.pid), '-o', 'command='],
+        { encoding: 'utf8', timeout: 5000 }).trim();
+    } catch {
+      // 进程不在，或 ps 不可用/超时。清掉记录就算了。
+      clearKernelPid(KERNEL_PID_PATH);
+      return;
+    }
+
+    if (!shouldKillOrphan(record, cmdline)) {
+      // 命令行对不上：这个 pid 已经是别人的了，绝对不能动。
+      console.warn(`[app] pid ${record.pid} 已不是我们的内核，跳过清理`);
+      clearKernelPid(KERNEL_PID_PATH);
+      return;
+    }
+
+    try {
+      // 对 -pid 发信号打整个进程组：孤儿内核自己也可能拉起了 node-pty 的 shell。
+      process.kill(-record.pid, 'SIGKILL');
+      console.log(`[app] 已清理上次残留的孤儿内核 pid=${record.pid}`);
+    } catch (error) {
+      console.warn('[app] 清理孤儿内核失败:', error?.message ?? error);
+    }
+    clearKernelPid(KERNEL_PID_PATH);
   };
 
   const showWindow = () => {
@@ -305,6 +362,7 @@ if (!gotLock) {
       userKernelDir: USER_KERNEL_DIR,
       activationPatchPath: ACTIVATION_PATCH_PATH,
       pluginStatePath: PLUGIN_STATE_PATH,
+      kernelPidPath: KERNEL_PID_PATH,
       safeMode,
     });
     dsh = service;
@@ -585,6 +643,10 @@ if (!gotLock) {
     // 上次弃用内核时若删到一半被杀掉，残骸会留在磁盘上（300+ MB）。异步清一遍，
     // 不占启动路径。
     sweepDiscardedKernels();
+    // 同一类事，清的是进程而不是目录：上次异常退出（崩溃 / 被强杀）留下的孤儿
+    // 内核。必须排在 startDsh 之前 —— 那一步会覆盖 pid 记录，覆盖之后就再也
+    // 认不出上一次那个了。
+    sweepOrphanKernel();
     // 解包必须在 startDsh 之前完成：没铺开之前内核根本不存在。失败时上面已经
     // 弹过说明框，这里直接不往下走（对话框的「重试」会重启应用）。
     if (!(await unpackBuiltinKernelIfNeeded())) return;
