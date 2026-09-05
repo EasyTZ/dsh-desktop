@@ -2,10 +2,10 @@
 #
 # 先只跑 Windows 那一版做出的判断在这里也成立：`npm run dist` 最有价值也最慢的
 # 一步（verify-kernel）会真的启动一次内核，这件事只能在目标平台上做——所以加
-# Linux 用的是**独立 job**，不是一个 os 矩阵。矩阵适合「同一套 steps，只是
-# runs-on 不同」的场景；这里 Windows 用 pwsh 读内核版本、Linux 用 bash 读，
-# 两边的 electron-builder 目标（--win / --linux）、产物文件名、后续要不要处理
-# nsis 也完全不同——摊开成矩阵反而要塞一堆 if 分支，不如两个 job 各自直给。
+# Linux / macOS 用的都是**独立 job**，不是一个 os 矩阵。矩阵适合「同一套 steps，
+# 只是 runs-on 不同」的场景；这三个 job 用的 shell 不同（pwsh / bash）、
+# electron-builder 目标（--win / --linux / --mac）、产物文件名、要不要处理
+# nsis/dmg 也完全不同——摊开成矩阵反而要塞一堆 if 分支，不如三个 job 各自直给。
 # 详见 docs/decisions/packaging.md「为什么上 CI」。
 name: Release
 
@@ -62,11 +62,11 @@ jobs:
           $version = (Get-Content -Raw $pkgPath | ConvertFrom-Json).version
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-      # 两个平台各自的产物都先落到 Actions artifact，真正发布交给下面的 publish
-      # job 统一做——原因见文件头注释：避免 Windows / Linux 两个 job 各自调用
-      # 一次 action-gh-release，同时对着同一个刚创建的 Release 抢着建，产生竞态。
-      # 只保留 7 天：这不是给终端用户下载的渠道（那是 Release），nightly 调试
-      # 完就没用了，每份 370MB+，没必要占着默认的 90 天。
+      # 三个平台各自的产物都先落到 Actions artifact，真正发布交给下面的 publish
+      # job 统一做——原因见文件头注释：避免 Windows / Linux / macOS 三个 job
+      # 各自调用一次 action-gh-release，同时对着同一个刚创建的 Release 抢着建，
+      # 产生竞态。只保留 7 天：这不是给终端用户下载的渠道（那是 Release），
+      # 调试完就没用了，每份 370MB+，没必要占着默认的 90 天。
       - name: 上传 Windows 产物
         uses: actions/upload-artifact@v5
         with:
@@ -112,14 +112,57 @@ jobs:
           path: release/*
           retention-days: 7
 
+  build-mac:
+    # macos-14 是 Apple Silicon（arm64）runner，跟 electron-builder.yml 里
+    # `mac.target.arch: [arm64]` 对上——不需要交叉编译，也交叉不了（dmg 打包
+    # 跟 verify-kernel 一样只能在目标平台真跑）。
+    runs-on: macos-14
+    timeout-minutes: 60
+    outputs:
+      kernel-version: ${{ steps.kernel.outputs.version }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # dmg 是挂载镜像，跟 AppImage 的 squashfs 一样没有「逐文件解压」这一步，
+      # dist.mjs 传 --mac 之后跟 --linux 一样跳过打 tar。不打签名 identity——
+      # 已定不买 Developer ID，让 electron-builder 走它自己的 ad-hoc 默认行为，
+      # 这条本身没有在 CI 上验证过（CI 不能验证「用户双击能不能打开」，那是
+      # 真机验证清单的活，见 docs/decisions/multiplatform.md）。
+      - name: 打包
+        run: npm run dist -- --mac
+
+      - name: 读取本次内置内核版本
+        id: kernel
+        shell: bash
+        run: |
+          version=$(node -p "require('./kernel/runtime/node_modules/@deepseek-ai/dsh/package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: 上传 macOS 产物
+        uses: actions/upload-artifact@v5
+        with:
+          name: release-mac
+          path: release/*
+          retention-days: 7
+
   # 只在真正由 tag 触发（push tag，或 workflow_dispatch 手动选了某个 tag）时才
   # 发布：手动从分支跑只是想验证打包本身能不能过，不该产生一个 Release。
   #
-  # 两个平台的产物在这里汇合成同一次 action-gh-release 调用——这是「合并到同一个
-  # Release」问题的答案：不是让两个 build job 各发各的，而是都发去 job artifact，
+  # 三个平台的产物在这里汇合成同一次 action-gh-release 调用——这是「合并到同一个
+  # Release」问题的答案：不是让三个 build job 各发各的，而是都发去 job artifact，
   # 由这个下游 job 一次性收集、一次性发布，天然不会有谁先谁后创建 Release 的竞态。
   publish:
-    needs: [build-windows, build-linux]
+    needs: [build-windows, build-linux, build-mac]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
@@ -135,15 +178,22 @@ jobs:
           name: release-linux
           path: release
 
-      # 两个 job 装的是同一份 kernel-src/ 声明，理论上版本必然相同；万一将来
+      - name: 下载 macOS 产物
+        uses: actions/download-artifact@v5
+        with:
+          name: release-mac
+          path: release
+
+      # 三个 job 装的是同一份 kernel-src/ 声明，理论上版本必然相同；万一将来
       # 谁改漏了导致不一致，这里直接报错，好过发布说明里悄悄写错一个版本号。
-      - name: 核对两个平台的内核版本一致
+      - name: 核对三个平台的内核版本一致
         run: |
           win="${{ needs.build-windows.outputs.kernel-version }}"
           linux="${{ needs.build-linux.outputs.kernel-version }}"
-          echo "windows=$win linux=$linux"
-          if [ "$win" != "$linux" ]; then
-            echo "两个平台打进包的内核版本不一致：windows=$win linux=$linux" >&2
+          mac="${{ needs.build-mac.outputs.kernel-version }}"
+          echo "windows=$win linux=$linux mac=$mac"
+          if [ "$win" != "$linux" ] || [ "$win" != "$mac" ]; then
+            echo "三个平台打进包的内核版本不一致：windows=$win linux=$linux mac=$mac" >&2
             exit 1
           fi
 

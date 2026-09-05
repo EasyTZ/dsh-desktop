@@ -78,3 +78,40 @@ linux:
         - "**/*"
     - from: build/icon.png
       to: icon.png
+mac:
+  target:
+    - target: dmg
+      arch: [arm64]
+  # Apple 官方 LSApplicationCategoryType，这个应用是给开发者用的桌面壳，选
+  # developer-tools。只出 arm64：.app 里塞的是 arch 特定的 .node / rg / node，
+  # universal 要么装两套内核树（单平台已经 300+ MB，翻倍不划算），要么对整棵树
+  # lipo（不现实）。Intel Mac 暂不支持。
+  category: public.app-category.developer-tools
+  # electron-builder 拿单张 ≥512 的 PNG 自动生成 icns，跟 linux 段同理。
+  icon: build/icon.png
+  artifactName: DeepSeek-Harness-Desktop-${version}.${ext}
+  # 内核不打 tar，理由比 Linux 更硬：unpackKernel() 就地解到 resources/kernel
+  # 后会 rmSync 删归档——mac 上这等于往一个已签名的 .app 里写文件、删文件，
+  # 签名当场失效，而 arm64 上签名失效不是弹窗提示，是根本起不来。所以跟 linux
+  # 段一样直接把 kernel/ 目录整棵交给 extraResources，不经过 kernel-dist。
+  # 这段跟顶层 extraResources 是合并关系（同一个实测结论，见 linux 段注释）。
+  extraResources:
+    - from: kernel
+      to: kernel
+      filter:
+        - "**/*"
+    - from: plugins-dist
+      to: plugins
+      filter:
+        - "**/*"
+    - from: build/icon.png
+      to: icon.png
+    # mac 菜单栏托盘图标：文件名以 Template 结尾，Electron/macOS 会自动按纯黑
+    # + alpha 的模板图处理（自动适配浅色/深色菜单栏、选中态反色）。彩色图标
+    # resize 到 16px 在深色菜单栏里是一坨糊的方块，所以单独渲染一份单色版，
+    # 见 scripts/gen-icon.mjs。@2x 是 Retina 变体，跟 Template.png 放同目录，
+    # Electron 会自动按屏幕缩放挑选。
+    - from: build/iconTemplate.png
+      to: iconTemplate.png
+    - from: build/iconTemplate@2x.png
+      to: iconTemplate@2x.png

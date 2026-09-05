@@ -1,7 +1,7 @@
 'use strict';
 
 const { Tray, Menu, nativeImage } = require('electron');
-const { iconPath } = require('./window');
+const { iconPath, trayTemplateIconPath } = require('./window');
 
 /**
  * 「检查内核更新」这一项的标签。带上当前内核版本，让用户不用打开更新窗口就能
@@ -45,10 +45,21 @@ function buildTrayMenu({ onShow, onQuit, onCheckUpdate, onFeedback, kernelVersio
  * @returns {import('electron').Tray|null} 失败（多半是 Linux 缺 libappindicator）时返回 null
  */
 function createTray(opts) {
-  const icon = iconPath();
-  const img = icon ? nativeImage.createFromPath(icon) : nativeImage.createEmpty();
+  const isMac = process.platform === 'darwin';
+  // mac 菜单栏要单色 template 图（见 window.js/gen-icon.mjs 的注释），彩色图标
+  // resize 到 16px 在深色菜单栏里是一坨糊的方块。Windows/Linux 继续用彩色图标
+  // 手动 resize 到 16px。
+  const icon = isMac ? trayTemplateIconPath() : iconPath();
+  let img = icon ? nativeImage.createFromPath(icon) : nativeImage.createEmpty();
+  if (isMac) {
+    // 双保险：文件名 `Template` 后缀本身已经会被 Electron 自动识别为模板图，
+    // 这里显式设一遍，不依赖命名巧合。
+    img.setTemplateImage(true);
+  } else {
+    img = img.resize({ width: 16, height: 16 });
+  }
   try {
-    const tray = new Tray(img.resize({ width: 16, height: 16 }));
+    const tray = new Tray(img);
     tray.setToolTip('DeepSeek Harness Desktop');
     tray.setContextMenu(buildTrayMenu(opts));
     tray.on('double-click', opts.onShow);

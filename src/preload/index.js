@@ -39,16 +39,21 @@ const ICONS = {
  * 接缝。恢复分段背景：左段（.tb-aside）跟踪侧边栏实际宽度和颜色，右段走
  * bg-base，两段拼起来才跟下面的内容严丝合缝。
  */
+// mac 有原生红绿灯（见 src/main/window.js 的 `titleBarStyle: 'hiddenInset'`），
+// 自己再画一套摆在右上角既多余又违和——用户对「关闭」按钮位置的预期是系统级的。
+const isMac = process.platform === 'darwin';
+
 function injectTitlebar() {
   const bar = document.createElement('div');
   bar.id = 'dsh-titlebar';
-  bar.innerHTML =
-    '<div class="tb-aside"></div>' +
-    '<div class="tb-controls">' +
-    '<button class="tb-btn" data-action="minimize" aria-label="最小化">' + ICONS.minimize + '</button>' +
-    '<button class="tb-btn" data-action="maximize" aria-label="最大化">' + ICONS.maximize + '</button>' +
-    '<button class="tb-btn tb-close" data-action="close" aria-label="关闭">' + ICONS.close + '</button>' +
-    '</div>';
+  bar.innerHTML = isMac
+    ? '<div class="tb-aside"></div>'
+    : '<div class="tb-aside"></div>' +
+      '<div class="tb-controls">' +
+      '<button class="tb-btn" data-action="minimize" aria-label="最小化">' + ICONS.minimize + '</button>' +
+      '<button class="tb-btn" data-action="maximize" aria-label="最大化">' + ICONS.maximize + '</button>' +
+      '<button class="tb-btn tb-close" data-action="close" aria-label="关闭">' + ICONS.close + '</button>' +
+      '</div>';
   document.body.appendChild(bar);
 
   bar.querySelectorAll('.tb-btn').forEach((btn) => {
@@ -57,7 +62,7 @@ function injectTitlebar() {
     });
   });
 
-  // 最大化 / 还原按钮图标随窗口状态切换。
+  // 最大化 / 还原按钮图标随窗口状态切换（mac 没有这两个按钮，没有监听目标）。
   const maxBtn = bar.querySelector('[data-action="maximize"]');
   ipcRenderer.on('window:maximized-changed', (_e, isMax) => {
     if (!maxBtn) return;
@@ -79,6 +84,12 @@ function injectTitlebar() {
 // tree 才渲染，几秒是常态；再长就不是「还没渲染」而是「选择器已经失效」了。
 const SIDEBAR_PROBE_TIMEOUT_MS = 15000;
 
+// Apple 系统窗口红绿灯 + 周围留白占用的标准宽度（配合 window.js 里
+// `trafficLightPosition: {x:12}` 的观感估算）。mac 上 `.tb-aside` 的着色条要从
+// 红绿灯右边开始，否则侧边栏折叠到 56px 时色块宽度不够，红绿灯会露到
+// bg-base 的背景色上——右边缘仍然对齐真实侧边栏宽度，只是左边让出这一段。
+const MAC_TRAFFIC_LIGHT_ZONE = 78;
+
 /**
  * 标题栏左段跟随 dsh 侧边栏的宽度与颜色：侧边栏可折叠（280px ↔ 56px），写死
  * 宽度会在折叠瞬间露出色差。dsh 的侧边栏没有 data-testid，只能靠 CSS Modules
@@ -98,7 +109,14 @@ function trackSidebarWidth(aside) {
   let observer = /** @type {ResizeObserver | null} */ (null);
 
   const sync = () => {
-    if (sidebar) aside.style.width = sidebar.getBoundingClientRect().width + 'px';
+    if (!sidebar) return;
+    const width = sidebar.getBoundingClientRect().width;
+    if (isMac) {
+      aside.style.left = MAC_TRAFFIC_LIGHT_ZONE + 'px';
+      aside.style.width = Math.max(0, width - MAC_TRAFFIC_LIGHT_ZONE) + 'px';
+    } else {
+      aside.style.width = width + 'px';
+    }
   };
 
   const giveUp = setTimeout(() => {

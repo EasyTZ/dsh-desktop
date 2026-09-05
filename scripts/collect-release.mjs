@@ -17,15 +17,16 @@ if (!existsSync(distDir)) {
 
 const files = readdirSync(distDir);
 // 按当前版本精确匹配，避免 dist 里残留的旧版本产物被误选。
-// 每个平台每次只会产出自己那一套（CI 上 Windows job 和 Linux job 各自独立跑
+// 每个平台每次只会产出自己那一套（CI 上 Windows / Linux / mac job 各自独立跑
 // electron-builder，不会同时出现），所以每种都是「有就收，没有就跳过」，不像
 // setup 曾经那样是唯一的硬性必需项。
 const setup = files.find((f) => /^DeepSeek-Harness-Desktop-Setup-.*\.exe$/.test(f) && f.endsWith(`-${version}.exe`));
 const zip = files.find((f) => f.endsWith(`-${version}-win.zip`));
 const appImage = files.find((f) => f.endsWith(`-${version}.AppImage`));
+const dmg = files.find((f) => f.endsWith(`-${version}.dmg`));
 
-if (!setup && !appImage) {
-  console.error('[collect-release] 未找到任何已知产物（Windows 安装包 / AppImage）');
+if (!setup && !appImage && !dmg) {
+  console.error('[collect-release] 未找到任何已知产物（Windows 安装包 / AppImage / dmg）');
   process.exit(1);
 }
 
@@ -35,6 +36,7 @@ mkdirSync(releaseDir, { recursive: true });
 if (setup) cpSync(join(distDir, setup), join(releaseDir, `DeepSeek-Harness-Desktop-Setup-${version}.exe`));
 if (zip) cpSync(join(distDir, zip), join(releaseDir, `DeepSeek-Harness-Desktop-Portable-${version}.zip`));
 if (appImage) cpSync(join(distDir, appImage), join(releaseDir, `DeepSeek-Harness-Desktop-${version}.AppImage`));
+if (dmg) cpSync(join(distDir, dmg), join(releaseDir, `DeepSeek-Harness-Desktop-${version}.dmg`));
 
 console.log('[collect-release] 完成，产物：');
 for (const f of readdirSync(releaseDir)) {

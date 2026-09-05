@@ -1,6 +1,6 @@
 # DeepSeek Harness Desktop
 
-以 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（下称 `dsh`）为内核的桌面版 AI 编程助手，支持 **Windows 与 Linux**。**双击即用，不需要装 Node.js、不需要懂命令行。**
+以 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（下称 `dsh`）为内核的桌面版 AI 编程助手，支持 **Windows、Linux 与 macOS（Apple Silicon）**。**双击即用，不需要装 Node.js、不需要懂命令行。**
 
 <p align="center">
   <img src="docs/screenshot.png" alt="深色主题" width="800">
@@ -29,7 +29,7 @@
 - **插件市场** —— 侧边栏直接搜、直接装，不用碰命令行。自带的几个插件也在这里管，可以随时停用或卸载，卸了还能一键装回来。
 - **完整 dsh 能力** —— 会话、文件、终端、搜索、子代理，一个不少。
 - **原生桌面观感** —— 无边框窗口 + 自定义标题栏，浅色 / 深色 / 跟随系统主题。
-- **Windows 与 Linux 都能跑** —— 同一套代码、同一个内核，Windows 出安装包与绿色版，Linux 出 AppImage，下载即用。
+- **Windows、Linux、macOS 都能跑** —— 同一套代码、同一个内核，Windows 出安装包与绿色版，Linux 出 AppImage，macOS（Apple Silicon）出 dmg，下载即用。
 
 ---
 
@@ -42,12 +42,13 @@
 | `...-Setup-x.x.x.exe` | Windows | **安装包**：一路「下一步」，装完有桌面图标，新手选这个 |
 | `...-Portable-x.x.x.zip` | Windows | **绿色版**：解压即用，免安装，适合放 U 盘 |
 | `...-x.x.x.AppImage` | Linux x64 | 下载后 `chmod +x` 即可运行，不用安装 |
+| `...-x.x.x.dmg` | macOS（Apple Silicon） | 打开后把图标拖进 Applications 即可，仅支持 M 系列芯片 |
 
 > **Windows**：本程序没有做代码签名，可能提示「未知发布者」或被杀软拦一下，选择「仍要运行 / 允许」即可。
 >
 > **Linux**：AppImage 自挂载需要 FUSE 2（`libfuse.so.2`）。如果执行没反应，先试 `./xxx.AppImage --appimage-extract-and-run` —— 能跑就说明是 FUSE 的事，装一下发行版的 fuse 包即可。另外需要 GTK3 / NSS / ALSA 这些常见图形库，装了桌面环境的发行版基本都有；真缺的话报错会直接写明缺哪个 `.so`，按名字装即可。
 >
-> **macOS 暂未支持**，原因见 [docs/decisions/multiplatform.md](docs/decisions/multiplatform.md)。
+> **macOS**：本程序没有付费的开发者证书，首次打开会被 Gatekeeper 拦下、提示「已损坏，无法打开」或「无法验证开发者」——这不是真的损坏，右键图标选「打开」（而不是双击）走一次例外确认即可，之后正常。仅支持 Apple Silicon（M 系列），不支持 Intel Mac。
 
 ---
 
@@ -96,6 +97,7 @@
 | Linux 上 AppImage 双击没反应 | 多半缺 FUSE 2。先试 `./xxx.AppImage --appimage-extract-and-run`，能跑就装一下发行版的 fuse 包 |
 | Linux 上启动报缺少某个 `.so` | 缺常见图形库（GTK3 / NSS / ALSA 之类）。报错会写明缺哪个，按名字装即可 |
 | Linux 上没有托盘图标 | 部分桌面环境不带 libappindicator。应用会照常运行，只是少了托盘入口——用 `Ctrl + Alt + Space` 唤出窗口 |
+| macOS 上提示「已损坏，无法打开」/「无法验证开发者」 | 没有付费开发者证书导致的 Gatekeeper 拦截，不是真的损坏。右键图标选「打开」（而不是双击）确认一次即可，之后正常 |
 
 ---
 
@@ -139,7 +141,7 @@ npm start                # 开发态运行（外壳 spawn 本机全局 dsh）
 npm test                 # 单元测试（node:test，零第三方依赖）
 npm run typecheck        # tsc --checkJs 静态检查（无编译产物）
 npm run dist             # 打包 → 产物收进 release/（目标平台按当前系统猜）
-npm run dist -- --linux  # 显式指定目标平台（--win / --linux）
+npm run dist -- --linux  # 显式指定目标平台（--win / --linux / --mac）
 npm run dist:dir         # 只出 unpacked 目录，快速验证打包态
 npm run link-plugins     # 联调插件：改同级插件仓库的代码即刻生效（可常开）
 npm run plugins-status   # 看插件当前是「钉 tag」还是「联调」
@@ -157,7 +159,7 @@ git tag v1.2.3
 git push origin v1.2.3
 ```
 
-推 tag 会触发 [`.github/workflows/release.yml`](.github/workflows/release.yml)：Windows 与 Linux 两个 job 并行打包，各自跑完整条流水线（含内核自检），产物汇合后一次性发布到 [Releases](https://github.com/EasyTZ/dsh-desktop/releases)。
+推 tag 会触发 [`.github/workflows/release.yml`](.github/workflows/release.yml)：Windows / Linux / macOS 三个 job 并行打包，各自跑完整条流水线（含内核自检），产物汇合后一次性发布到 [Releases](https://github.com/EasyTZ/dsh-desktop/releases)。
 
 **日常 `git push` 不会触发发版**，只会跑 [`ci.yml`](.github/workflows/ci.yml)（测试 + 类型检查）。本地 `npm run dist` 保留，作为打 tag 前的快速验证。
 

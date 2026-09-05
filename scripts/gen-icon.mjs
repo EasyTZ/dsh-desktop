@@ -1,6 +1,9 @@
 // 用 DeepSeek 官方鲸鱼 logo（build/logo.svg）生成应用图标：
-// - build/icon.png：256x256 透明背景（系统托盘 / 窗口图标）
+// - build/icon.png：1024x1024 透明背景（系统托盘 / 窗口图标 / Linux 与 mac 的
+//   Dock 图标源图，electron-builder 拿它自动切图标集）
 // - build/icon.ico：多尺寸 PNG 内嵌（安装包 / 开始菜单 / 任务栏图标）
+// - build/iconTemplate.png + iconTemplate@2x.png：mac 菜单栏托盘专用的单色
+//   template 图（见下方「4)」）
 //
 // 关键点：先裁掉 logo 自带的透明留白，让鲸鱼尽量填满图标画布，
 // 这样缩到 16px 托盘、24px 开始菜单时，鲸鱼仍然足够大、足够清晰。
@@ -71,7 +74,30 @@ for (const size of ICO_SIZES) {
 }
 const pngBuf = await render(PNG_SIZE);
 
+// 4) mac 菜单栏 template 图：纯黑 + alpha，文件名以 Template 结尾时 Electron/
+//    macOS 会自动按模板图处理（浅色/深色菜单栏、选中态反色都交给系统），彩色
+//    图标 resize 到 16px 在深色菜单栏里是一坨糊的方块，必须单独出一份单色版。
+//    做法：拿同一份「鲸鱼填满」的 alpha 形状，用 dest-in 合成到一张纯黑底图上——
+//    结果就是保留原图轮廓、颜色全部变黑的剪影，而不是简单调低饱和度（那样半透明
+//    的浅色描边部分会变成灰色而不是纯黑，模板图要求非黑即透明）。
+async function renderTemplate(size) {
+  const shape = await render(size);
+  const { width, height } = await sharp(shape).metadata();
+  const black = await sharp({
+    create: { width, height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 1 } },
+  }).png().toBuffer();
+  return sharp(black).composite([{ input: shape, blend: 'dest-in' }]).png().toBuffer();
+}
+
+// 非 Retina 用 16，@2x 用 32——跟托盘图标现有的 16px 展示尺寸对齐（tray.js 对
+// 非 mac 平台也是 resize 到 16px）。
+const templatePng = await renderTemplate(16);
+const templatePng2x = await renderTemplate(32);
+
 mkdirSync(join(root, 'build'), { recursive: true });
 writeFileSync(join(root, 'build', 'icon.png'), pngBuf);
 writeFileSync(join(root, 'build', 'icon.ico'), encodeIco(icoImages));
-console.log('已生成 build/icon.png（1024）与 build/icon.ico（16~256 多尺寸，鲸鱼填满）');
+writeFileSync(join(root, 'build', 'iconTemplate.png'), templatePng);
+writeFileSync(join(root, 'build', 'iconTemplate@2x.png'), templatePng2x);
+console.log('已生成 build/icon.png（1024）、build/icon.ico（16~256 多尺寸）、'
+  + 'build/iconTemplate(@2x).png（mac 菜单栏单色图）');

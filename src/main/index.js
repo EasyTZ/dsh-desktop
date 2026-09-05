@@ -635,7 +635,12 @@ if (!gotLock) {
     // 先弹闪屏给用户即时反馈，再并行做内核启动等耗时初始化。
     splash = createSplashWindow();
     ensureStartMenuShortcut();
-    globalShortcut.register('CommandOrControl+Alt+Space', toggleWindow);
+    // register() 失败时返回 false、不抛异常——之前没看返回值，快捷键被系统或
+    // 别的应用占用时会悄悄失效，用户以为快捷键就是这样，无从排查。mac 上这个
+    // 组合键与系统/其它 App 撞车的概率比 Windows 高，这条日志尤其要有。
+    if (!globalShortcut.register('CommandOrControl+Alt+Space', toggleWindow)) {
+      console.warn('[app] 全局快捷键 CommandOrControl+Alt+Space 注册失败（可能被系统或其它应用占用）');
+    }
     initUpdater();
     maybeAutoCheck();
     initAppUpdateChecker();
@@ -672,5 +677,12 @@ if (!gotLock) {
 
   app.on('window-all-closed', () => {
     // 保持托盘驻留；仅显式退出时真正退出。
+  });
+
+  // mac 原生习惯：关窗口不退出 App（上面 window-all-closed 已经这么做了），
+  // 但点 Dock 图标要能把窗口叫回来——这条 Windows/Linux 没有 Dock，事件不会
+  // 触发，不需要平台判断。`showWindow()` 自己会判 `win` 是否存在/已销毁。
+  app.on('activate', () => {
+    showWindow();
   });
 }

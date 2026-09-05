@@ -1,6 +1,6 @@
 # 多端打包
 
-Windows + Linux 已上线，macOS 暂缓。这份文件记录**做这件事时发现的、不写下来就会被重新踩一遍的东西**。具体的构建配置见 [packaging.md](packaging.md)。
+Windows + Linux + macOS（仅 arm64，签名行为尚未真机验证）已上线。这份文件记录**做这件事时发现的、不写下来就会被重新踩一遍的东西**。具体的构建配置见 [packaging.md](packaging.md)。
 
 ## 承重判断：难的不是 Electron，是内核树
 
@@ -38,7 +38,7 @@ Windows 机器上的全局安装里**只有 `*-win32-x64` 变体，darwin / linu
 
 现有代码天然支持这件事：`needsUnpack()` 的条件是「归档存在**且**内核不完整」，没有归档就返回 false，启动路径原样走过去——**主进程一行没改**。
 
-macOS 将来也走这条，而且理由更硬：就地解包会往已签名的 `.app` 里写文件、删文件，签名当场失效，而 arm64 上签名失效等于**根本起不来**。
+macOS 也走这条，而且理由更硬：就地解包会往已签名的 `.app` 里写文件、删文件，签名当场失效，而 arm64 上签名失效等于**根本起不来**。
 
 ## glibc 基线：实测胜过推理
 
@@ -83,7 +83,9 @@ AppImage 的自挂载依赖 **FUSE 2**（`libfuse.so.2`）。目标机器上没�
 - **AppImage 双击（桌面集成）没验过**，只验了命令行执行。
 - 窗口渲染靠 `xvfb-run`，且**必须带 `--disable-gpu`**——不带的话 Electron 进程全起来却永远挂着、不报错。这只是无头环境的调试手段，**不要**写进 `src/main/index.js`：真实用户有 GPU，关掉硬件加速是实打实的体验损失。
 
-## macOS：暂缓
+## macOS：已支持（仅 arm64），签名尚未在真机上验证
+
+CI 的 `macos-14` runner（Apple Silicon）能打出 dmg，`.github/workflows/release.yml` 的 `build-mac` job 跟 Windows / Linux 两个 job 并列，`publish` job 收三个平台的产物、核对内核版本一致。**只出 arm64**：`.app` 里塞的是 arch 特定的 `.node` / `rg` / `node`，universal 要么装两套内核树（单平台已经 300+ MB，翻倍不划算），要么对整棵树 lipo（不现实）；Intel Mac 暂不支持。
 
 不买 Apple Developer Program（99 USD/年），走免费的 ad-hoc 签名。需要先厘清一件容易搞错的事：
 
@@ -92,8 +94,26 @@ AppImage 的自挂载依赖 **FUSE 2**（`libfuse.so.2`）。目标机器上没�
 | ad-hoc 签名（`codesign -s -`） | 免费，只需 Xcode CLT | 让二进制**能被执行** | Apple Silicon 内核直接拒绝执行，不是弹窗，是起不来 |
 | Developer ID + 公证 | 99 USD/年 | 让用户**双击就能开** | 首次要右键 → 打开，之后正常 |
 
-所以 mac 上做不到「完全不签」，只能是「ad-hoc 签、不公证」。
+所以 mac 上做不到「完全不签」，只能是「ad-hoc 签、不公证」。`electron-builder.yml` 的 `mac:` 段没有配置任何 `identity` / `notarize` / `hardenedRuntime`——让 electron-builder 走它自己的默认行为（找不到签名证书时自动 ad-hoc 签 `.app`）。这一点**没有在真机上实测过**，属于下面「真机验证清单」的第一条。
 
 一个减负的事实：npm 分发的那些 darwin 二进制本来就是发布方签好的（`rg`、sharp / koffi / node-pty 的 `.node`），Node.js 官方 mac 构建也是。保字节复制不破坏它们，**真正需要我们自己签的只有 `.app` 本身**。
 
-**暂缓的理由**不是技术难度，是它卡在两个外部条件上：需要一台借来的 Mac（`verify-kernel` 要真启动内核、签名要 `codesign`，两件事都跨不了平台），且签名行为没人实测过。前置工作全部就绪——按目标平台干净安装、POSIX 正确性、内核不打 tar 的机制、CI 的 build/publish 分离结构、1024px 图标，都是为它铺好的。
+### mac 专属的窗口 chrome / 内核铺开方式
+
+跟 Linux 共用「内核不打 tar」的机制（`pack-kernel.mjs` 非 win 目标直接跳过），但 mac 的理由更硬：`unpackKernel()` 就地解到 `resources/kernel` 后会 `rmSync` 删归档，这等于往已签名的 `.app` 里写文件、删文件，**签名当场失效，而 arm64 上签名失效不是弹窗提示，是根本起不来**。`electron-builder.yml` 的 `mac:` 段把 `extraResources` 照 `linux:` 段写了一遍（指向 `kernel` 而非 `kernel-dist`），跟 linux 段同一个「合并不是覆盖」的实测结论。
+
+其余是 mac 平台惯用法的常规适配，不是这次踩的坑：
+
+- `src/main/window.js`：`titleBarStyle: 'hiddenInset'` + `trafficLightPosition` 替代 `frame: false`，保留原生红绿灯（自己画一套摆在右上角既多余又违和）
+- `src/preload/index.js`：mac 上不渲染自绘的三个窗口按钮；`.tb-aside`（标题栏左段的侧边栏同色条）左边让出红绿灯的宽度（`MAC_TRAFFIC_LIGHT_ZONE`），右边缘仍对齐真实侧边栏宽度
+- `src/main/tray.js`：mac 菜单栏要**纯黑 + alpha 的 template 图**（文件名以 `Template` 结尾，Electron/macOS 自动适配浅色/深色菜单栏），彩色图标 resize 到 16px 在深色菜单栏里是一坨糊的方块——`scripts/gen-icon.mjs` 用 `dest-in` 合成单独出这一份
+- `src/main/index.js`：补了 `app.on('activate')`（点 Dock 图标叫回窗口），`window-all-closed` 不退出这条保留（mac 原生习惯）；全局快捷键 `register()` 的返回值现在会检查并打日志——mac 上这个组合键撞车的概率比 Windows 高
+
+### 真机验证清单（不要照抄网上的配置）
+
+这轮改动**只在 CI 上验证到「dmg 能打出来，解开看内部结构对」**——kernel/ 是目录树不是归档、plugins/profile/ 的 5 个 tgz 都在。以下四条只有真机能验，见 `macos-deferred.md`（已改名为验证清单，只留这四条）：
+
+1. electron-builder 没有 identity 时会不会自动 ad-hoc 签 `.app`
+2. 它签的时候会不会破坏 `extraResources` 里已有的签名（npm 那些 darwin 二进制本来是签好的）
+3. Hardened Runtime 开不开——倾向于不开，但要实测确认 Electron 自己不依赖它
+4. 走一遍真实用户路径：下载 dmg → 打开 → 拖进 Applications → 首次启动（会撞 Gatekeeper，要右键 → 打开）

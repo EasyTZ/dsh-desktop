@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-DeepSeek Harness Desktop：以 `@deepseek-ai/dsh`（下称 dsh）为内核的 Electron 外壳，出 **Windows + Linux**（macOS 暂缓，见 docs/decisions/multiplatform.md）。主进程是原生 CommonJS，构建脚本是 ESM `.mjs`，**没有编译步骤**——src/ 直接打进 asar，这是打包设计的承重墙，别轻易引入编译产物。
+DeepSeek Harness Desktop：以 `@deepseek-ai/dsh`（下称 dsh）为内核的 Electron 外壳，出 **Windows + Linux + macOS（仅 arm64）**（macOS 尚未在真机上验证过，见 docs/decisions/multiplatform.md）。主进程是原生 CommonJS，构建脚本是 ESM `.mjs`，**没有编译步骤**——src/ 直接打进 asar，这是打包设计的承重墙，别轻易引入编译产物。
 
 ## 定位：我们是 dsh 的发行版
 
@@ -44,9 +44,9 @@ npm run plugins-status   # 看插件当前是「钉 tag」还是「联调」
 npm run refresh-plugins  # 改了 #tag 后强制重拉（绕开 npm 的 git 依赖缓存）
 npm run prepare-kernel   # 按 kernel-src/ 声明的版本，干净安装内核到 kernel/
 npm run dist             # 打包（自动临时解除联调、打完自动恢复）；目标平台按当前系统猜
-npm run dist -- --linux  # 显式指定目标平台（--win / --linux）。不是交叉编译：
-                         # 打 AppImage 仍要在 Linux 上跑，这个参数只是让意图明确
-npm run dist:dir         # 只出 unpacked 目录，不出安装包 / AppImage
+npm run dist -- --linux  # 显式指定目标平台（--win / --linux / --mac）。不是交叉编译：
+                         # 打 AppImage / dmg 仍要在对应平台上跑，这个参数只是让意图明确
+npm run dist:dir         # 只出 unpacked 目录，不出安装包 / AppImage / dmg
 npm run pack-profile-plugins  # 把 profile 层插件 npm pack 成 tgz，摊到 plugins-dist/profile/
 npm run icon             # 仅在改了 build/logo.svg 后重新生成 icon.png/ico
 ```
@@ -88,7 +88,7 @@ test/         node:test 用例
 | 要改什么 | 先读 |
 |---|---|
 | 上游扩展点、slot、CSS 类名弱耦合 | docs/decisions/upstream-and-layers.md |
-| 多端打包：内核树为什么按平台锁死、glibc 基线、mac 暂缓的理由 | docs/decisions/multiplatform.md |
+| 多端打包：内核树为什么按平台锁死、glibc 基线、mac 签名与窗口 chrome 差异 | docs/decisions/multiplatform.md |
 | 插件的联调 / 发版 / npm 发布 / 随包 tgz | docs/decisions/plugin-dev-loop.md |
 | 内核目录、双层回退、热更新、通知、外壳自更新 | docs/decisions/kernel-lifecycle.md |
 | profile 层插件契约、对账、安全模式、插件市场 | docs/decisions/profile-plugins.md |
