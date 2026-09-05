@@ -13,7 +13,7 @@
 // reconcileProfilePlugins 从 plugins-dist/profile 的 tgz 装进去，和内核是两条独立
 // 的生命线 —— 这正是迁到 profile 层的目的：换内核不动插件，换插件不动内核。
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findDshInstallSync, findPnpmDirSync } from '../src/shared/dsh-locate.js';
@@ -146,7 +146,11 @@ function cleanInstallPrepare() {
   // pnpm 先搬出来单独落到 kernel/pnpm——`src/main/index.js` 的 PNPM_CLI_PATH 与
   // kernel-updater.js 认的就是这个落点，不能让它跟着 dsh 的依赖树一起进
   // runtime/node_modules（陷阱一）。
+  const pnpmBinNames = Object.keys(
+    JSON.parse(readFileSync(join(stagedPnpm, 'package.json'), 'utf8')).bin ?? {},
+  );
   renameSync(stagedPnpm, join(outDir, 'pnpm'));
+  dropOrphanedBinShims(join(stagedModules, '.bin'), pnpmBinNames);
   // 剩下整棵 node_modules 搬进 runtime/。**不能只搬 @deepseek-ai/dsh 这一个子
   // 目录**——npm 的常规安装会把大部分依赖 hoist 到 node_modules 顶层，不会像
   // 全局安装那样全塞进 dsh/node_modules/ 里；只搬 dsh 子目录会把 hoist 出去的
@@ -317,6 +321,45 @@ function auditPrune(nodeModulesDir, snapshot) {
     process.exit(1);
   }
   console.log(`[prepare-kernel] 解析面审计通过：${snapshot.length} 个入口裁剪后依然在`);
+}
+
+/**
+ * 把 pnpm 搬走之后留下的 `.bin` 残链清掉。
+ *
+ * `npm ci` 会给每个带 `bin` 的依赖在 `node_modules/.bin/` 下放一个入口
+ * （POSIX 是符号链接，Windows 是 .cmd/.ps1 垫片）。而我们**故意**把 pnpm 从
+ * `node_modules` 里搬到 `kernel/pnpm`，那几个入口就指向了不存在的位置。
+ *
+ * Windows / Linux 上没人读 `.bin`（内核跑 pnpm 走的是运行期另造的垫片目录），
+ * 所以这个残留一直没暴露。**macOS 上会**：`codesign --deep` 遍历包内容时撞上
+ * 悬空链接，直接报 `No such file or directory`，整个签名校验失败 —— 而签名失败
+ * 在 Apple Silicon 上等于打出一个起不来的包。实测就是这么炸的（4 条：pn / pnpm /
+ * pnx / pnpx）。
+ *
+ * 按 pnpm 自己声明的 bin 名字删，不写死清单：将来 pnpm 加个新命令也不会漏。
+ * 三种变体（无扩展名 / .cmd / .ps1）一起删。
+ *
+ * @param {string} binDir `node_modules/.bin`
+ * @param {string[]} names 要清掉的命令名
+ */
+function dropOrphanedBinShims(binDir, names) {
+  if (!existsSync(binDir) || names.length === 0) return;
+  let removed = 0;
+  for (const name of names) {
+    for (const suffix of ['', '.cmd', '.ps1']) {
+      const full = join(binDir, name + suffix);
+      // lstat 而不是 exists：悬空的符号链接 existsSync 返回 false（它跟着链接
+      // 走），那样就一条都删不掉 —— 而悬空的恰恰是要删的那些。
+      try {
+        lstatSync(full);
+      } catch {
+        continue;
+      }
+      rmSync(full, { force: true });
+      removed += 1;
+    }
+  }
+  if (removed > 0) console.log(`[prepare-kernel] 清掉 ${removed} 个指向已搬走的 pnpm 的 .bin 残链`);
 }
 
 /**
