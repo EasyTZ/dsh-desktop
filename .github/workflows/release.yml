@@ -1,0 +1,73 @@
+# 发版流水线：把本机手动 `npm run dist` 搬到 CI 上，先只跑 Windows。
+#
+# 为什么先只跑 Windows：`npm run dist` 里最有价值也最慢的一步（verify-kernel）
+# 会真的启动一次内核，这件事只能在目标平台上做——流水线本身的坑（拉插件的
+# git 依赖、npm 缓存、200MB+ 产物上传、Release 写权限）跟平台无关，在已知
+# 正确的 Windows 上先趟掉，之后加 Linux / macOS 矩阵只需要面对平台差异。
+# 详见 docs/decisions/packaging.md「为什么上 CI」。
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # 第一次调试不可能靠反复打 tag 来试，手动触发是必须的。从 UI 选择某个已有
+  # tag 作为 ref 手动跑，可以完整测到下面的发布步骤；从默认分支手动跑则只验
+  # 证打包本身，不会碰 Release（见下面「发布到 Release」的 if 条件）。
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    # 本机整条 dist 大约十分钟量级，CI 上装依赖 + 装内核会更久。给 60 分钟的
+    # 上限：真卡住时（verify-kernel 的 90s 预算只覆盖「等地址行」那一段，
+    # 别的步骤没有各自的超时）不至于白占 runner 到默认的 6 小时。
+    timeout-minutes: 60
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # 装依赖会顺带拉五个插件的 git 依赖（package.json 里钉的 tag），需要联网
+      # 访问 github.com；不要配任何镜像，GitHub runner 直连比经代理快。
+      - name: 安装依赖
+        run: npm ci
+
+      # dist.mjs 自己会跑完 校验插件 pin → prepare-kernel → 打插件 tgz →
+      # 内核自检 → electron-builder → collect-release 整条链路，产物落在 release/。
+      # 这里不拆开写成多个 step，理由见 scripts/dist.mjs 顶部注释：拆开会丢失
+      # 「联调模式自动收尾」这层保护，而 CI 上本来就没有联调，拆不拆看不出差别，
+      # 但拆开之后本地和 CI 就变成两条不同的路径，两边分别踩坑。
+      - name: 打包
+        run: npm run dist
+
+      # 产物文件名里只有应用版本号，内核是独立升级的另一条线，发布说明必须
+      # 单独写清楚这次打进包的内核版本——collect-release.mjs 在控制台打印过
+      # 一次，这里换成读同一份 package.json，作为后续 step 能用的输出。
+      - name: 读取本次内置内核版本
+        id: kernel
+        shell: pwsh
+        run: |
+          $pkgPath = Join-Path $env:GITHUB_WORKSPACE 'kernel\runtime\node_modules\@deepseek-ai\dsh\package.json'
+          $version = (Get-Content -Raw $pkgPath | ConvertFrom-Json).version
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      # 只在真正由 tag 触发（push tag，或 workflow_dispatch 手动选了某个 tag）
+      # 时才发布：手动从分支跑只是想验证打包本身能不能过，不该产生一个 Release。
+      - name: 发布到 Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          body: |
+            本次内置内核：dsh ${{ steps.kernel.outputs.version }}
+
+            完整更新日志见 [CHANGELOG.md](https://github.com/EasyTZ/dsh-desktop/blob/main/CHANGELOG.md)。

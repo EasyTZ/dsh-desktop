@@ -137,7 +137,7 @@ npm run link-plugins     # 联调插件：改同级插件仓库的代码即刻�
 npm run plugins-status   # 看插件当前是「钉 tag」还是「联调」
 ```
 
-`npm run dist` 会依次执行 校验插件 pin → prepare-kernel → 打插件 tgz → 内核自检 → 打包，产物落在 `release/`。
+`npm run dist` 会依次执行 校验插件 pin → prepare-kernel → 打插件 tgz → 内核自检 → 打包，产物落在 `release/`。发版走 CI：改版本号、加 CHANGELOG、打 tag、push tag，`.github/workflows/release.yml` 会在 GitHub Actions 上跑完整条流水线并把产物发布到 [Releases](https://github.com/EasyTZ/dsh-desktop/releases)；本地 `npm run dist` 保留作为打 tag 前的快速验证。
 
 **插件开发**：五个插件（插件市场、Git 面板、终端面板、余额显示、在资源管理器中打开）都是[独立仓库](https://github.com/EasyTZ?tab=repositories&q=dsh-)，以 `@easytz/*` 发布，本仓库按钉住的 tag 作为 git 依赖引用，只为打成 tgz 放进安装包。
 

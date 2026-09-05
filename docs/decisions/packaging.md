@@ -4,7 +4,13 @@
 
 `electron-builder.yml`：`asar` 只打 `src/**` + `package.json`（生产依赖只是 vendor 用的插件 git 依赖，`beforeBuild` 返回 `false` 跳过 install/rebuild）；`kernel/` 与 `plugins-dist/` 走 extraResources（`plugins-dist/profile/` 是 `scripts/pack-profile-plugins.mjs` 用 `npm pack` 打出的 tgz + 索引，首启离线播种、以及用户卸载后从市场装回来都要靠它）；`electronDist: node_modules/electron/dist` 复用本机 Electron。**首次** `npm install`（拉插件 git 依赖）需要联网，lockfile 未变时的重复构建不联网——这是拆仓主动接受的代价。
 
-`collect-release.mjs` 按 `package.json` 的 `version` **精确匹配**产物名，改版本号时 dist/ 里的旧产物不会被误选；结束时还会报一次本次打进包的内核版本（产物文件名上只有应用版本号，而内核是独立升级的另一条线，发布说明里要写「内置内核 x.y.z」）。发版流程：改 `package.json` version → 在 CHANGELOG.md 加一节 → `npm run dist`。
+`collect-release.mjs` 按 `package.json` 的 `version` **精确匹配**产物名，改版本号时 dist/ 里的旧产物不会被误选；结束时还会报一次本次打进包的内核版本（产物文件名上只有应用版本号，而内核是独立升级的另一条线，发布说明里要写「内置内核 x.y.z」）。发版流程：改 `package.json` version → 在 CHANGELOG.md 加一节 → 打 tag → push tag → CI 出包（`.github/workflows/release.yml`）。本地 `npm run dist` 保留，作为打 tag 前的快速验证手段。
+
+## 为什么上 CI
+
+`npm run dist` 里最有价值的一步是 `verify-kernel`——它会**真的启动一次内核**等就绪，这是唯一能捕获「裁剪把运行时真要用的文件删掉了」这类错误的手段，而这件事只能在目标平台上做（Windows 的内核布局、可执行位、路径分隔符都跟 macOS / Linux 不一样）。多端打包意味着这道自检要在四个平台上各做一次，本机手动切系统跑不现实，CI 矩阵是唯一合理的落点——仓库是公开的，GitHub Actions 免费、不限分钟数，没有额外成本。
+
+先只上 Windows：流水线本身的坑（怎么拉插件的 git 依赖、npm 缓存、200MB+ 产物上传、Release 写权限）跟平台无关，在已知正确的平台上先趟掉，之后往矩阵里加 Linux / macOS 时只需要面对平台差异本身。
 
 **内核安装：从「拷全局安装」到「按声明干净安装」**。旧版本 `prepare-kernel.mjs` 直接 `cpSync` 打包机上的全局 `@deepseek-ai/dsh` 与全局 `pnpm`，为此配了一道「内核版本闸门」（`package.json` 的 `dshKernel.expected` 声明这一版要发哪个内核，对不上就中止）——闸门是**症状的补丁**，不是解药：它存在的唯一理由是内核来自「打包机上碰巧装了什么」，随手一次 `npm i -g @deepseek-ai/dsh` 就换了内核，同一个 app commit 在不同时间打包可能装进两个不同版本，而外面贴的是同一个应用版本号；闸门只是把这种不可控挡在门外，没有让它变得可控。更根本的问题是：全局安装是打包机自己的平台（比如 Windows x64），拿它去打 mac/linux 包，那些平台专属的 optional 依赖（`@img/sharp-*`、`@koromix/koffi-*`、`@vscode/ripgrep-*` 等）根本没装进来，产物是死的——这才是「一直以来只能出 Windows」的根因。
 

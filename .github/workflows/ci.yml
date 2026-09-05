@@ -1,0 +1,38 @@
+# 提交前检查：只跑测试和类型检查，不打包（太慢，也不该在每次 push 时出包）。
+#
+# 为什么值得单独开一个轻量 workflow：插件联调把 npm test 从 178 打到 175 之后
+# 一直红着，直到有人手动跑才发现——十几行 workflow 就能让这类事再也不会无声发生。
+name: CI
+
+on:
+  # 只跟分支，不跟 tag：推 tag 会触发 Release 流水线，那条里已经包含了
+  # 测试与类型检查（dist 的每一步都跑不过就会中止），这里再跑一遍纯属重复。
+  push:
+    branches:
+      - '**'
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    # 这条只跑测试，几分钟就该结束。给个上限，免得偶发卡住时白占 runner——
+    # 默认上限是 6 小时，等到那时候早就没人看了。
+    timeout-minutes: 20
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 单元测试
+        run: npm test
+
+      - name: 类型检查
+        run: npm run typecheck
