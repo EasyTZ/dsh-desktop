@@ -107,6 +107,8 @@ CI 的 `macos-14` runner（Apple Silicon）能打出 dmg，`.github/workflows/re
 - `src/main/window.js`：`titleBarStyle: 'hiddenInset'` + `trafficLightPosition` 替代 `frame: false`，保留原生红绿灯（自己画一套摆在右上角既多余又违和）
 - `src/preload/index.js`：mac 上不渲染自绘的三个窗口按钮；`.tb-aside`（标题栏左段的侧边栏同色条）左边让出红绿灯的宽度（`MAC_TRAFFIC_LIGHT_ZONE`），右边缘仍对齐真实侧边栏宽度
 - `src/main/tray.js`：mac 菜单栏要**纯黑 + alpha 的 template 图**（文件名以 `Template` 结尾，Electron/macOS 自动适配浅色/深色菜单栏），彩色图标 resize 到 16px 在深色菜单栏里是一坨糊的方块——`scripts/gen-icon.mjs` 用 `dest-in` 合成单独出这一份
+- **状态栏不能是内核更新的唯一入口**：状态项在菜单栏拥挤或带刘海的屏幕上可能被 macOS 挤掉，资源和 `Tray` 都正常也不代表用户点得到。因此同一份菜单状态还要同步安装到顶部应用菜单，并给 Dock 右键菜单放一个「检查内核更新」入口；三个入口复用同一组回调，更新完成后一起刷新版本号。
+- **未公证版本的提示必须在应用外面**：当前产物经 `codesign -s -` 做的是免费 ad-hoc 签名，只解决 Apple Silicon 执行完整性，不会让 Gatekeeper 把它认成“已识别开发者”。应用被拦截时自己的代码尚未运行，所谓“首次启动提示”根本出不来；所以 `gen-dmg-background.mjs` 把“系统设置 → 隐私与安全 → 仍要打开”的步骤画进 DMG 的 Finder 背景。不要附带一个脚本替用户改安全设置——它自己也会被拦截，而且是在教用户执行更危险的操作。
 - `src/main/index.js`：补了 `app.on('activate')`（点 Dock 图标叫回窗口），`window-all-closed` 不退出这条保留（mac 原生习惯）；全局快捷键 `register()` 的返回值现在会检查并打日志——mac 上这个组合键撞车的概率比 Windows 高
 
 ### 签名：electron-builder 不会自动 ad-hoc 签，得自己来
@@ -123,6 +125,10 @@ CI 的 `macos-14` runner（Apple Silicon）能打出 dmg，`.github/workflows/re
 所以 `scripts/after-pack.js` 里补了一步 `codesign --force --deep --sign -`，签完立刻 `--verify --deep --strict`，**失败即中止构建**：签不上等于打出一个在 Apple Silicon 上起不来的包，发出去比构建失败糟糕得多。
 
 **踩到的坑：`--deep` 会撞上悬空符号链接。** 第一次签完校验报 `No such file or directory` —— 内核树里有 4 条悬空的 `.bin` 链接（`pn` / `pnpm` / `pnx` / `pnpx`），因为 `prepare-kernel` **故意**把 pnpm 从 `node_modules` 搬到 `kernel/pnpm`（`PNPM_CLI_PATH` 认那个落点），`npm ci` 建的 `.bin` 入口就悬空了。Windows / Linux 上没人读 `.bin`，躺了两轮没暴露。修在源头（`dropOrphanedBinShims`），不是去掉 `--deep` 绕过校验。
+
+**本地 Mac 还会带进 Finder 扩展属性。** 下载或经文件提供器处理过的源 `Electron.app` 可能带 `com.apple.FinderInfo` / resource fork，electron-builder 原样复制后，`codesign` 会以 `resource fork, Finder information, or similar detritus not allowed` 拒签。`after-pack.js` 在签名前对输出 `.app` 执行一次 `xattr -cr`，只归一化尚未签名的构建产物；不要对已经签好的发布包事后执行，那会破坏签名。
+
+只清一次仍挡不住 **iCloud Desktop / File Provider 主动把 FinderInfo 加回来**：项目若放在桌面同步目录，`xattr -d` 返回成功后立刻再读，属性已经重现。`dist.mjs` 因此让 mac 目标始终在 `tmpdir()` 下完成 builder、签名和 DMG 封装，成功后再把完整产物复制回仓库的 `dist/`；DMG 内部的 `.app` 已在不受 File Provider 干扰的位置签好。临时目录由 `mkdtemp` 创建，成功或失败都在 `finally` 中清理。
 
 > 这是**第三个**「换个平台才炸」的隐性问题，跟 electron 44 没有 postinstall、内核树按平台锁死是同一类：本机碰巧没事，全新环境必炸。
 

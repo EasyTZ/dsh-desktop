@@ -21,7 +21,8 @@
 // 恢复用 try/finally：打包失败也要把联调恢复回去，否则人会在不知情的状态下继续
 // 开发，改半天没生效。
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { vendoredPluginNames } from '../src/shared/profile-plugins.js';
@@ -167,6 +168,8 @@ function inspect(name) {
 
 const linked = linkedPlugins();
 let restore = false;
+/** @type {string|null} macOS 构建放到非文件提供器目录，签名完成后再复制回来。 */
+let transientMacOutput = null;
 
 // 非联调态也要核对一遍，只是**降级成警告**。
 //
@@ -234,15 +237,36 @@ try {
   run('pack-profile-plugins.mjs');
   run('verify-kernel.mjs');
   run('pack-kernel.mjs', [`--${target}`]);
+  // 未公证应用的放行说明必须在应用执行前可见，所以直接画在 DMG Finder 背景上。
+  // --dir 不生成 DMG，不需要这一步。
+  if (target === 'mac' && !dirOnly) run('gen-dmg-background.mjs');
   ensureElectronBinary();
   // `--publish never`：electron-builder 检测到 CI 环境会**隐式开启发布**（日志里
   // 那句 "Implicit publishing triggered by CI detection"），也就是它会自己去建
   // / 改 GitHub Release。发布这件事由 workflow 里那一步显式负责，两边同时动
   // Release 迟早出事，而且这个隐式行为在 electron-builder v27 会被移除，早点写死
   // 反而少一次将来的意外。本地跑没有 CI 环境变量，加不加都一样。
+  // 工作区若在 iCloud Desktop 等文件提供器目录里，文件提供器会持续给刚生成的
+  // .app 重挂 com.apple.FinderInfo，codesign 清掉后也会立刻长回来。mac 构建因此
+  // 始终在系统临时目录完成签名和 DMG 封装，最终产物再复制回惯用的 dist/。
+  transientMacOutput = target === 'mac' ? mkdtempSync(join(tmpdir(), 'dsh-desktop-builder-')) : null;
+  const outputArg = transientMacOutput
+    ? ` --config.directories.output=${JSON.stringify(transientMacOutput)}`
+    : '';
   runCmd(dirOnly
-    ? `npx electron-builder --${target} --dir --publish never`
-    : `npx electron-builder --${target} --publish never`);
+    ? `npx electron-builder --${target} --dir --publish never${outputArg}`
+    : `npx electron-builder --${target} --publish never${outputArg}`);
+  if (transientMacOutput) {
+    const distDir = join(root, 'dist');
+    mkdirSync(distDir, { recursive: true });
+    for (const name of readdirSync(transientMacOutput)) {
+      const source = join(transientMacOutput, name);
+      const destination = join(distDir, name);
+      rmSync(destination, { recursive: true, force: true });
+      cpSync(source, destination, { recursive: true });
+    }
+    console.log(`[dist] macOS 产物已从临时构建目录收回 ${distDir}`);
+  }
   if (!dirOnly) {
     run('collect-release.mjs');
     // --dir 模式不出安装包，这时候清理会把上一版的安装包删掉却没有新的顶上，
@@ -250,6 +274,9 @@ try {
     pruneOtherVersions();
   }
 } finally {
+  if (transientMacOutput) {
+    rmSync(transientMacOutput, { recursive: true, force: true });
+  }
   // 无论打包成功还是失败都要恢复，否则人会在「以为还在联调」的状态下继续改，
   // 改半天不生效。
   if (restore) {

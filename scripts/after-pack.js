@@ -53,7 +53,7 @@ function pruneLocales(appOutDir) {
  *
  * ad-hoc 签名（`--sign -`）免费、不需要任何 Apple 账号，只需要 Xcode CLT（macOS
  * runner 自带）。它买到的是「能执行」；买不到「双击直接打开」—— 那需要 Developer
- * ID + 公证（99 USD/年），已决定不买，用户首次要右键 → 打开。
+ * ID + 公证（99 USD/年），已决定不买，用户首次需在「隐私与安全」里确认打开。
  *
  * `--deep` 会连同嵌套的可执行文件一起签。这会覆盖 npm 分发的那些 darwin 二进制
  * （rg、sharp / koffi / node-pty 的 .node）原有的发布方签名 —— **可以接受**：
@@ -77,6 +77,13 @@ function adhocSignMacApp(context) {
   if (!fs.existsSync(appPath)) {
     throw new Error(`ad-hoc 签名找不到 .app：${appPath}`);
   }
+
+  // Finder、浏览器或文件提供器可能给源 Electron.app 写入 FinderInfo / ResourceFork
+  // 等扩展属性，electron-builder 拷贝时会一并带进输出。codesign 对这种元数据会
+  // 直接报 “resource fork, Finder information, or similar detritus not allowed”。
+  // 输出包尚未签名，这时清掉整棵 .app 的扩展属性是确定且安全的构建归一化步骤；
+  // 必须放在签名前，签完再改任何元数据都会破坏刚生成的签名。
+  execFileSync('xattr', ['-cr', appPath], { stdio: 'inherit' });
 
   console.log(`  • ad-hoc 签名  ${appPath}`);
   execFileSync('codesign', ['--force', '--deep', '--sign', '-', appPath], { stdio: 'inherit' });

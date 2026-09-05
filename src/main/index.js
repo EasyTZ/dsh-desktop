@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { DshService } = require('./dsh-service');
 const { createMainWindow } = require('./window');
-const { createTray, buildTrayMenu } = require('./tray');
+const { createTray, buildTrayMenu, installMacApplicationMenu } = require('./tray');
 const { createSplashWindow } = require('./splash');
 const { TaskNotifications } = require('./notifications');
 const { KernelUpdater } = require('./kernel-updater');
@@ -491,10 +491,10 @@ if (!gotLock) {
 
     updater = created;
 
-    // 内核更新完成后重建托盘菜单，让上面显示的版本号跟着变。
+    // 内核更新完成后重建系统菜单，让上面显示的版本号跟着变。
     created.on('state', (state) => {
-      if (state.phase !== 'done' || !tray) return;
-      tray.setContextMenu(buildTrayMenu(trayMenuOpts()));
+      if (state.phase !== 'done') return;
+      refreshDesktopMenus();
     });
 
     ipcMain.handle('updater:get-state', () => created.getState());
@@ -531,6 +531,13 @@ if (!gotLock) {
     onOpenAppUpdate: openAppUpdate,
   });
 
+  /** 状态栏、macOS 顶部应用菜单与 Dock 菜单始终由同一份状态重建。 */
+  const refreshDesktopMenus = () => {
+    const opts = trayMenuOpts();
+    if (tray) tray.setContextMenu(buildTrayMenu(opts));
+    installMacApplicationMenu(opts);
+  };
+
   // 外壳自身的更新检查：跟内核更新是两套独立的节流与状态（见 app-updater.js
   // 顶部注释）。查到新版本只做两件事——系统通知（AppUpdateChecker 自己弹，
   // 且只弹一次）、把结果记下来供托盘菜单常驻展示一项，不打断、不弹应用内窗口。
@@ -549,7 +556,7 @@ if (!gotLock) {
       appUpdateChecker.check().then((state) => {
         if (state.phase !== 'available' || !state.latestVersion) return;
         appUpdateInfo = { version: state.latestVersion, url: state.releaseUrl };
-        if (tray) tray.setContextMenu(buildTrayMenu(trayMenuOpts()));
+        refreshDesktopMenus();
       }).catch(() => {});
     }, 8000);
   };
@@ -642,8 +649,9 @@ if (!gotLock) {
       console.warn('[app] 全局快捷键 CommandOrControl+Alt+Space 注册失败（可能被系统或其它应用占用）');
     }
     initUpdater();
-    maybeAutoCheck();
     initAppUpdateChecker();
+    refreshDesktopMenus();
+    maybeAutoCheck();
     maybeAutoCheckAppUpdate();
     // 上次弃用内核时若删到一半被杀掉，残骸会留在磁盘上（300+ MB）。异步清一遍，
     // 不占启动路径。

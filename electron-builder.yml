@@ -47,6 +47,22 @@ nsis:
   createStartMenuShortcut: true
   shortcutName: DeepSeek Harness Desktop
   artifactName: DeepSeek-Harness-Desktop-Setup-${version}.${ext}
+dmg:
+  # Finder 一挂载镜像就展示安装与 Gatekeeper 放行步骤；应用在被放行前无法自己弹窗。
+  background: build/dmg-background.png
+  window:
+    width: 660
+    height: 480
+  iconSize: 92
+  iconTextSize: 12
+  contents:
+    - x: 150
+      y: 160
+      type: file
+    - x: 510
+      y: 160
+      type: link
+      path: /Applications
 linux:
   target:
     - target: AppImage

@@ -24,6 +24,12 @@
 联调把这个循环打破：**把内核要读的那个目录换成一个指向工作副本的 junction**，从此「内核读的目录」
 和「你编辑的目录」是同一个。改完存盘就能验证，不必 push、不必打 tag、不必发 npm。
 
+**联调时还要刻意用发行版将采用的内核验证一次。** dsh 0.1.2 的 workspace store 方法开始通过
+`this` 读取内部快照；插件若把 `store.subscribe` / `store.getSnapshot` 直接作为裸函数传给
+`useSyncExternalStore`，0.1.1 下看似正常，0.1.2 下点击入口才会崩。插件客户端必须用闭包调用
+`store.subscribe(...)` / `store.getSnapshot()`，保留接收者；相关 smoke fixture 也必须让方法依赖
+`this`，否则测试守不住这条兼容边界。只用机器上碰巧存在的旧全局内核跑 `npm start`，会把这类问题藏掉。
+
 所以它只有两个状态，对应两件不同的事：
 
 | 状态 | 内核跑的是哪份代码 | 用在什么时候 |

@@ -4,7 +4,7 @@
   "private": true,
   "description": "内核的安装规格，不是可运行的包。prepare-kernel.mjs 按这里声明的版本、按目标平台对它做一次干净 npm ci，装出 kernel/runtime/node_modules 与 kernel/pnpm。版本号故意写死精确值（不用 ^ / ~）——这里要的就是「这一版发哪个内核」这句声明，升级内核因此变成一次跟着提交走的、有意的改动。",
   "dependencies": {
-    "@deepseek-ai/dsh": "0.1.1-rc.2",
+    "@deepseek-ai/dsh": "0.1.2-rc.1",
     "pnpm": "11.23.0"
   }
 }

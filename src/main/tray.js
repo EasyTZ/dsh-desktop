@@ -1,6 +1,6 @@
 'use strict';
 
-const { Tray, Menu, nativeImage } = require('electron');
+const { app, Tray, Menu, nativeImage } = require('electron');
 const { iconPath, trayTemplateIconPath } = require('./window');
 
 /**
@@ -41,6 +41,65 @@ function buildTrayMenu({ onShow, onQuit, onCheckUpdate, onFeedback, kernelVersio
 }
 
 /**
+ * 给 macOS 再放两条不依赖状态栏图标的入口。
+ *
+ * 菜单栏项目过多（尤其带刘海的屏幕）时，macOS 会把一部分状态项挤掉；那不是
+ * Tray 创建失败，但用户同样点不到唯一的更新入口。顶部应用菜单与 Dock 右键菜单
+ * 都是系统原生、不会依赖状态项是否可见，且复用同一组回调，不再造第二套行为。
+ */
+function installMacApplicationMenu(opts) {
+  if (process.platform !== 'darwin') return;
+  /** @type {import('electron').MenuItemConstructorOptions[]} */
+  const appUpdateItems = opts.appUpdate ? [
+    { label: `有新版本 v${opts.appUpdate.version}，点击查看`, click: opts.onOpenAppUpdate },
+    { type: 'separator' },
+  ] : [];
+  /** @type {import('electron').MenuItemConstructorOptions} */
+  const updateItem = { label: checkUpdateLabel(opts.kernelVersion), click: opts.onCheckUpdate };
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {
+      label: app.name,
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        ...appUpdateItems,
+        updateItem,
+        { label: '反馈问题', click: opts.onFeedback },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { label: '退出', accelerator: 'Command+Q', click: opts.onQuit },
+      ],
+    },
+    { role: 'editMenu' },
+    {
+      label: '窗口',
+      submenu: [
+        { label: '显示 / 隐藏', click: opts.onShow },
+        { type: 'separator' },
+        { role: 'minimize' },
+        { role: 'zoom' },
+        { type: 'separator' },
+        { role: 'front' },
+      ],
+    },
+  ]));
+
+  if (app.dock) {
+    app.dock.setMenu(Menu.buildFromTemplate([
+      { label: '显示 / 隐藏', click: opts.onShow },
+      { type: 'separator' },
+      updateItem,
+      ...appUpdateItems,
+      { label: '反馈问题', click: opts.onFeedback },
+    ]));
+  }
+}
+
+/**
  * @param {{onShow: () => void, onQuit: () => void, onCheckUpdate: () => void, onFeedback: () => void, kernelVersion?: string|null}} opts
  * @returns {import('electron').Tray|null} 失败（多半是 Linux 缺 libappindicator）时返回 null
  */
@@ -74,4 +133,4 @@ function createTray(opts) {
   }
 }
 
-module.exports = { createTray, buildTrayMenu, checkUpdateLabel };
+module.exports = { createTray, buildTrayMenu, checkUpdateLabel, installMacApplicationMenu };

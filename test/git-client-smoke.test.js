@@ -79,7 +79,13 @@ const cleanup = () => Object.assign(globalThis, {
 /** 装好插件、拿到注册进 shell.overlay 的面板组件。 */
 function renderPanel() {
   const mod = loadModule();
-  const mkStore = (val) => ({ getSnapshot: () => val, subscribe: () => () => {} });
+  // dsh 0.1.2 的 store 方法会读 `this`。故意按同样契约造假对象，防止客户端再把
+  // getSnapshot/subscribe 拆成裸函数传给 React（那会让面板点击后直接崩溃）。
+  const mkStore = (val) => ({
+    value: val,
+    getSnapshot() { return this.value; },
+    subscribe() { assert.strictEqual(this.value, val); return () => {}; },
+  });
   const captured = {};
   const ctx = {
     effect: () => () => {},

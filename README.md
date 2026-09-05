@@ -5,17 +5,21 @@
 **双击即用 —— 不需要装 Node.js，不需要懂命令行。**
 
 <p align="center">
-  <img src="docs/screenshot.png" alt="深色主题" width="800">
+  <a href="https://github.com/EasyTZ/dsh-desktop/releases/latest"><img alt="下载最新版" src="https://img.shields.io/github/v/release/EasyTZ/dsh-desktop?style=for-the-badge&label=下载最新版&color=4d6bfe"></a>
+  <img alt="Windows" src="https://img.shields.io/badge/Windows-x64-1674d1?style=for-the-badge&logo=windows11&logoColor=white">
+  <img alt="macOS" src="https://img.shields.io/badge/macOS-Apple%20Silicon-111111?style=for-the-badge&logo=apple&logoColor=white">
+  <img alt="Linux" src="https://img.shields.io/badge/Linux-x64-f6b73c?style=for-the-badge&logo=linux&logoColor=111111">
 </p>
 
 <p align="center">
-  <sub>浅色主题：</sub><br>
-  <img src="docs/screenshot-light.png" alt="浅色主题" width="800">
+  <img src="docs/screenshot.png" alt="DeepSeek Harness Desktop 深色主题" width="920">
 </p>
 
-<p align="center">
-  <a href="https://github.com/EasyTZ/dsh-desktop/releases/latest"><b>⬇️ 下载最新版</b></a>
-</p>
+<details>
+<summary><b>查看浅色主题</b></summary>
+<br>
+<p align="center"><img src="docs/screenshot-light.png" alt="DeepSeek Harness Desktop 浅色主题" width="920"></p>
+</details>
 
 ---
 
@@ -28,7 +32,7 @@
 | **Windows** | `...-Setup-x.x.x.exe` | **安装包**：一路「下一步」，装完有桌面图标 —— 新手选这个 |
 | **Windows** | `...-Portable-x.x.x.zip` | **绿色版**：解压即用，免安装，适合放 U 盘 |
 | **Linux** x64 | `...-x.x.x.AppImage` | `chmod +x` 之后双击或命令行运行，不用安装 |
-| **macOS** Apple Silicon | `...-x.x.x.dmg` | 打开后拖进「应用程序」。**首次启动要右键 →「打开」**，见下 |
+| **macOS** Apple Silicon | `...-x.x.x.dmg` | 打开后按图示拖进「应用程序」；首次启动按 DMG 内的安全放行步骤操作 |
 
 <details>
 <summary><b>各平台的首次启动提示（点开看）</b></summary>
@@ -37,7 +41,7 @@
 
 **Windows**：本程序没有购买代码签名证书，系统可能提示「未知发布者」，或被杀毒软件拦一下 —— 选择「仍要运行 / 允许」即可。
 
-**macOS**：同样没有购买 Apple 开发者签名（99 美元/年），所以首次打开时 Gatekeeper 会拦住。**右键点图标 →「打开」→ 再点一次「打开」**，之后就能正常双击了。这不代表程序有问题，只代表我们没交那笔年费。
+**macOS**：当前使用免费的 ad-hoc 签名，没有 Developer ID 与 Apple 公证，首次打开时 Gatekeeper 会拦截。先尝试双击一次，然后进入**系统设置 → 隐私与安全 → 安全性 → 仍要打开**，验证密码并确认「打开」。DMG 安装窗口里也会直接显示这三步。
 
 > 只提供 Apple Silicon（M 系列）版本，Intel Mac 暂不支持。
 
@@ -71,52 +75,39 @@
 
 ---
 
-## 🧩 内置四个面板，都在侧边栏
+## 🧩 四个内置面板，一处完成开发工作
 
-点开即用，不用切窗口、不用记命令。
+每个面板都沿用 dsh 的主题、圆角与交互，不再把四张比例不同的截图硬塞进四宫格。
 
-<table>
-<tr>
-<td width="50%" valign="top">
+### 🛒 插件市场 · 安装、更新与管理
 
-### 🛒 插件市场
+搜索 npm 上的 dsh 插件，查看详情和截图，一键安装、更新、停用或卸载。随桌面版分发的插件即使卸载，也能从本地副本离线装回。
 
-搜索、安装、更新、卸载，全程点鼠标。自带的这几个插件也在这里管，卸了还能一键装回来。有新版本时侧边栏会出现小角标。
+<p align="center"><img src="docs/plugins/market.png" alt="插件市场：发现、搜索与插件卡片" width="900"></p>
 
-<img src="docs/plugins/market.png" alt="插件市场" width="100%">
+---
 
-</td>
-<td width="50%" valign="top">
+### 🌿 Git 面板 · 日常操作不用离开会话
 
-### 🌿 Git 面板
+查看改动、逐文件暂存、提交、推送与切换分支；最近提交明确区分已推送和未推送状态，点开即可检查完整改动。
 
-改了哪些文件、暂存、提交、推送、切分支，点几下完事。提交历史区分已推送 / 未推送，点开能看每次提交的完整改动。
+<p align="center"><img src="docs/plugins/git.png" alt="Git 面板：状态、提交和历史" width="460"></p>
 
-<img src="docs/plugins/git.png" alt="Git 面板" width="100%">
+---
 
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
+### 💻 终端面板 · 命令与输出留在工作区
 
-### 💻 终端面板
+在当前工作区运行命令并查看实时输出，支持多标签、命令历史、路径补全和 `Ctrl+C` 中断；后台任务结束后会用状态灯提醒。
 
-在当前工作区敲命令、看实时输出，Tab 能补全路径和命令名。多标签，后台跑完会亮呼吸灯提示。
+<p align="center"><img src="docs/plugins/terminal.png" alt="终端面板：多标签与实时输出" width="900"></p>
 
-<img src="docs/plugins/terminal.png" alt="终端面板" width="100%">
+---
 
-</td>
-<td width="50%" valign="top">
+### 💰 余额与花费 · 用量随时可见
 
-### 💰 余额与花费
+侧边栏直接显示账户余额和本次花费；详情面板按模型汇总 token、日/周/月用量与当前单价，不必切换到账单网页。
 
-侧边栏一行字直接看 DeepSeek 账户余额。点开能看本次使用的用量和预估花费，按模型分开算，不用切到网页查。
-
-<img src="docs/plugins/balance.png" alt="余额显示" width="100%">
-
-</td>
-</tr>
-</table>
+<p align="center"><img src="docs/plugins/balance.png" alt="余额与花费面板" width="560"></p>
 
 还有一个 **「在资源管理器中打开」** —— 右键文件直接跳到系统文件管理器（Windows 资源管理器 / macOS 访达 / Linux 文件管理器）。
 
