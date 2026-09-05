@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-DeepSeek Harness Desktop：以 `@deepseek-ai/dsh`（下称 dsh）为内核的 Electron 外壳，当前出 Windows，Mac 在规划中。主进程是原生 CommonJS，构建脚本是 ESM `.mjs`，**没有编译步骤**——src/ 直接打进 asar，这是打包设计的承重墙，别轻易引入编译产物。
+DeepSeek Harness Desktop：以 `@deepseek-ai/dsh`（下称 dsh）为内核的 Electron 外壳，出 **Windows + Linux**（macOS 暂缓，见 docs/decisions/multiplatform.md）。主进程是原生 CommonJS，构建脚本是 ESM `.mjs`，**没有编译步骤**——src/ 直接打进 asar，这是打包设计的承重墙，别轻易引入编译产物。
 
 ## 定位：我们是 dsh 的发行版
 
@@ -43,8 +43,10 @@ npm run unlink-plugins   # 手动解除联调（日常不需要，dist 会自己
 npm run plugins-status   # 看插件当前是「钉 tag」还是「联调」
 npm run refresh-plugins  # 改了 #tag 后强制重拉（绕开 npm 的 git 依赖缓存）
 npm run prepare-kernel   # 按 kernel-src/ 声明的版本，干净安装内核到 kernel/
-npm run dist             # 打包（自动临时解除联调、打完自动恢复）
-npm run dist:dir         # 同上但只出 win-unpacked（快速验证打包态）
+npm run dist             # 打包（自动临时解除联调、打完自动恢复）；目标平台按当前系统猜
+npm run dist -- --linux  # 显式指定目标平台（--win / --linux）。不是交叉编译：
+                         # 打 AppImage 仍要在 Linux 上跑，这个参数只是让意图明确
+npm run dist:dir         # 只出 unpacked 目录，不出安装包 / AppImage
 npm run pack-profile-plugins  # 把 profile 层插件 npm pack 成 tgz，摊到 plugins-dist/profile/
 npm run icon             # 仅在改了 build/logo.svg 后重新生成 icon.png/ico
 ```
@@ -77,7 +79,7 @@ test/         node:test 用例
 
 加新逻辑前先问：主进程和构建脚本会不会都要用？会就放 `src/shared/`，顺便能写测试。
 
-外壳不渲染任何业务 UI：`DshService` spawn `node.exe .../dsh/lib/bin.js web --host 127.0.0.1 --port <随机空闲端口>`，轮询 HTTP 就绪后让 BrowserWindow `loadURL` 该回环地址。所有会话/文件/终端能力都来自 dsh 自身的 web 应用；外壳只贴自定义标题栏（`src/preload/index.js` 注入 DOM + CSS）、托盘、全局快捷键、系统通知和内核更新。
+外壳不渲染任何业务 UI：`DshService` spawn `<内核>/node .../dsh/lib/bin.js web --host 127.0.0.1 --port 0`（可执行文件名由 `kernel-paths.js` 的 `NODE_BIN` 决定，Windows 上带 `.exe`；`--port 0` 让内核自己向系统申请端口），轮询 HTTP 就绪后让 BrowserWindow `loadURL` 该回环地址。所有会话/文件/终端能力都来自 dsh 自身的 web 应用；外壳只贴自定义标题栏（`src/preload/index.js` 注入 DOM + CSS）、托盘、全局快捷键、系统通知和内核更新。
 
 启动时序（`src/main/index.js`）：先弹闪屏 → 并行启动内核 → `dsh.on('ready')` 建主窗口 → 主窗口 `once('show')` 才关闪屏（避免空白帧）。
 
@@ -85,13 +87,14 @@ test/         node:test 用例
 
 | 要改什么 | 先读 |
 |---|---|
-| 上游扩展点、slot、CSS 类名弱耦合、Mac 计划 | docs/decisions/upstream-and-layers.md |
+| 上游扩展点、slot、CSS 类名弱耦合 | docs/decisions/upstream-and-layers.md |
+| 多端打包：内核树为什么按平台锁死、glibc 基线、mac 暂缓的理由 | docs/decisions/multiplatform.md |
 | 插件的联调 / 发版 / npm 发布 / 随包 tgz | docs/decisions/plugin-dev-loop.md |
 | 内核目录、双层回退、热更新、通知、外壳自更新 | docs/decisions/kernel-lifecycle.md |
 | profile 层插件契约、对账、安全模式、插件市场 | docs/decisions/profile-plugins.md |
 | 终端面板、改插件要不要重启 | docs/decisions/terminal-panel.md |
 | 写新插件、客户端半怎么测 | docs/decisions/writing-a-plugin.md |
-| electron-builder、内核版本闸门、发版流程 | docs/decisions/packaging.md |
+| electron-builder、内核干净安装、CI 与发版流程 | docs/decisions/packaging.md |
 
 ## 约定
 

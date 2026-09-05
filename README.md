@@ -1,6 +1,6 @@
 # DeepSeek Harness Desktop
 
-以 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（下称 `dsh`）为内核的 Windows 桌面版 AI 编程助手。**双击即用，不需要装 Node.js、不需要懂命令行。**
+以 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（下称 `dsh`）为内核的桌面版 AI 编程助手，支持 **Windows 与 Linux**。**双击即用，不需要装 Node.js、不需要懂命令行。**
 
 <p align="center">
   <img src="docs/screenshot.png" alt="深色主题" width="800">
@@ -36,12 +36,17 @@
 
 到 [Releases 页面](https://github.com/EasyTZ/dsh-desktop/releases)下载**任选一个**：
 
-| 文件 | 选它的理由 |
-|---|---|
-| `...-Setup-x.x.x.exe` | **安装包**：一路「下一步」，装完有桌面图标，新手选这个 |
-| `...-Portable-x.x.x.zip` | **绿色版**：解压即用，免安装，适合放 U 盘 |
+| 文件 | 平台 | 选它的理由 |
+|---|---|---|
+| `...-Setup-x.x.x.exe` | Windows | **安装包**：一路「下一步」，装完有桌面图标，新手选这个 |
+| `...-Portable-x.x.x.zip` | Windows | **绿色版**：解压即用，免安装，适合放 U 盘 |
+| `...-x.x.x.AppImage` | Linux x64 | 下载后 `chmod +x` 即可运行，不用安装 |
 
-> 本程序没有做代码签名，Windows 可能提示「未知发布者」或被杀软拦一下，选择「仍要运行 / 允许」即可。
+> **Windows**：本程序没有做代码签名，可能提示「未知发布者」或被杀软拦一下，选择「仍要运行 / 允许」即可。
+>
+> **Linux**：AppImage 自挂载需要 FUSE 2（`libfuse.so.2`）。如果执行没反应，先试 `./xxx.AppImage --appimage-extract-and-run` —— 能跑就说明是 FUSE 的事，装一下发行版的 fuse 包即可。另外需要 GTK3 / NSS / ALSA 这些常见图形库，装了桌面环境的发行版基本都有；真缺的话报错会直接写明缺哪个 `.so`，按名字装即可。
+>
+> **macOS 暂未支持**，原因见 [docs/decisions/multiplatform.md](docs/decisions/multiplatform.md)。
 
 ---
 
@@ -131,8 +136,9 @@ npm install              # 装依赖（首次会下 Electron）
 npm start                # 开发态运行（外壳 spawn 本机全局 dsh）
 npm test                 # 单元测试（node:test，零第三方依赖）
 npm run typecheck        # tsc --checkJs 静态检查（无编译产物）
-npm run dist             # 打包 → 产物收进 release/
-npm run dist:dir         # 只出 win-unpacked，快速验证打包态
+npm run dist             # 打包 → 产物收进 release/（目标平台按当前系统猜）
+npm run dist -- --linux  # 显式指定目标平台（--win / --linux）
+npm run dist:dir         # 只出 unpacked 目录，快速验证打包态
 npm run link-plugins     # 联调插件：改同级插件仓库的代码即刻生效（可常开）
 npm run plugins-status   # 看插件当前是「钉 tag」还是「联调」
 ```

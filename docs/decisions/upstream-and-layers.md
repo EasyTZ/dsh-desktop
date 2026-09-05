@@ -34,10 +34,20 @@ README 原文：*"iterating rapidly. **THERE WILL BE COMPATIBILITY-BREAKING CHAN
 
 ### 跨平台
 
-平台假设集中在 L4 与 `kernel-paths.js`，**L1 / L2 无需改动** —— 这既是 Mac 的工作清单，也是对本分层的正面验证：
+**这一节原先是「Mac 的工作清单」，现在是「验证结果」。** 完整叙事见 [multiplatform.md](multiplatform.md)，这里只留跟分层有关的结论。
 
-- `kernel-paths.js` / `prepare-kernel.mjs` —— `node.exe` 硬编码（layout 的唯一定义处，改这一处即可）
-- `collect-release.mjs` —— 按 `.exe` 匹配产物
-- `electron-builder.yml` —— 仅 win target
-- `dsh-service.js` / `kernel-updater.js` 的 `taskkill`、`index.js` 的 `setAppUserModelId` 与 `ensureStartMenuShortcut` —— 均已带平台守卫
-- Mac 特有：自绘标题栏要给红绿灯让位（`trafficLightPosition`）；`prepare-kernel` 拷的是 `process.execPath`，**必须在 Mac 上打包**（跨平台既拿不到 mac 的 node 二进制，也做不了签名/公证）
+当初的判断是「平台假设集中在 L4 与 `kernel-paths.js`，**L1 / L2 无需改动**」。Windows + Linux 都做完之后回头看，这个判断**基本成立，但漏了一条**：
+
+- ✅ **L2（五个插件）一个字节都没改。** 零依赖、无原生模块，`dsh-reveal-explorer` 与 `dsh-terminal-panel` 本来就写了 darwin / linux 分支。
+- ✅ **L4 的活确实有限。** `kernel-paths.js` 收编了 `NODE_BIN`（原先五处各自拼 `node.exe`）；`taskkill` / `setAppUserModelId` / `ensureStartMenuShortcut` 的平台守卫当初就写对了，没动。
+- ❌ **漏判的一条：L1「只读」不等于「跨平台自动成立」。** 内核树整个来自打包机的全局安装，而 dsh 有四族按平台解析的 `optionalDependencies`——Windows 机器上只有 `*-win32-x64`，别的平台压根没装进来。这是「一直以来只能出 Windows」的真正根因，也是这次最大的一块改动（改成按目标平台 `npm ci`）。
+  > 教训：**「不改上游一行代码」保证的是 L1 的内容不变，不保证它在别的平台上装得出来。** 判断跨平台成本时，「我们不碰它」和「它跟平台无关」是两件事。
+
+L3（preload 注入的标题栏）在 Windows / Linux 上无差别；macOS 要给红绿灯让位（`trafficLightPosition`），那部分随 mac 一起暂缓。
+
+### 仍然待做
+
+- **向上游提 slot PR**（各 UI 包声明了几十个槽，但没有窗口 chrome 的）。落地后标题栏从 L3 的 DOM 注入变成 L2 的客户端插件，上面「已知偏离」的第 1 条连同 `padding-top` 一起消失。
+- **macOS** —— 见 [multiplatform.md](multiplatform.md) 末节。前置全部就绪，卡在借机器和签名实测上。
+- **不做 universal 包**（mac）：`.app` 里塞的是 arch 特定的 `.node` / `rg` / `node`，universal 要么装两套内核树（体积 ×2），要么对整棵树 lipo（不现实）。只出 arm64。
+- **Linux 桌面集成没验过**：系统托盘（libappindicator）与 AppImage 双击，验证机是 headless 的，只能确认「没崩」，不能确认「工作正常」。

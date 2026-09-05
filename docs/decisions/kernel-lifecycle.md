@@ -5,7 +5,7 @@
 三处（内置 / 用户 / staging）共用同一 layout，改动时必须同步：
 
 ```
-<kernelDir>/node.exe
+<kernelDir>/<NODE_BIN>   # Windows 是 node.exe，其余平台是 node
 <kernelDir>/runtime/node_modules/@deepseek-ai/dsh/lib/bin.js
 ```
 
@@ -16,7 +16,7 @@
 - **内置出厂内核**：`resources/kernel`（打包进安装包，只读兜底），开发态对应仓库根 `kernel/`。
 - **用户内核**：`%APPDATA%/deepseek-desktop/kernel`，热更新产物，完整**且不比出厂内核旧**时优先。
 
-`resolvePackagedKernel` 决定用哪层，判据有两条，顺序不能颠倒：先看完整性（`node.exe` + `bin.js`，残缺的再新也起不来），再比版本。
+`resolvePackagedKernel` 决定用哪层，判据有两条，顺序不能颠倒：先看完整性（node 可执行文件 + `bin.js`，残缺的再新也起不来），再比版本。
 
 **「出厂内核更新时反超」不是优化，是修一个必然发生的版本倒挂**：安装包不碰 `%APPDATA%`，所以用户装了带更新出厂内核的新版客户端后，旧的用户内核仍然完整、仍然会被选中 —— 新客户端的 preload 与插件是照着新内核验证的，却跑在旧内核上，而这个错配只能等 24h 节流过期后的自动检查、并且用户点了更新才会消解。保守起见只在「能确证出厂更新」时反超：任一侧版本读不出来就维持用户内核优先，不为一个读取失败引入新的启动分支。被反超的用户内核**不删**（它没坏，只是旧了），将来热更新出更新版本时会自然重新胜出。
 
