@@ -1,6 +1,6 @@
 # 多端打包
 
-Windows + Linux + macOS（仅 arm64，签名行为尚未真机验证）已上线。这份文件记录**做这件事时发现的、不写下来就会被重新踩一遍的东西**。具体的构建配置见 [packaging.md](packaging.md)。
+Windows + Linux + macOS（仅 arm64）已上线。签名在 CI 的 Apple Silicon runner 上验过，Gatekeeper 的真实观感待真机确认。这份文件记录**做这件事时发现的、不写下来就会被重新踩一遍的东西**。具体的构建配置见 [packaging.md](packaging.md)。
 
 ## 承重判断：难的不是 Electron，是内核树
 
@@ -83,7 +83,7 @@ AppImage 的自挂载依赖 **FUSE 2**（`libfuse.so.2`）。目标机器上没�
 - **AppImage 双击（桌面集成）没验过**，只验了命令行执行。
 - 窗口渲染靠 `xvfb-run`，且**必须带 `--disable-gpu`**——不带的话 Electron 进程全起来却永远挂着、不报错。这只是无头环境的调试手段，**不要**写进 `src/main/index.js`：真实用户有 GPU，关掉硬件加速是实打实的体验损失。
 
-## macOS：已支持（仅 arm64），签名尚未在真机上验证
+## macOS：已支持（仅 arm64）
 
 CI 的 `macos-14` runner（Apple Silicon）能打出 dmg，`.github/workflows/release.yml` 的 `build-mac` job 跟 Windows / Linux 两个 job 并列，`publish` job 收三个平台的产物、核对内核版本一致。**只出 arm64**：`.app` 里塞的是 arch 特定的 `.node` / `rg` / `node`，universal 要么装两套内核树（单平台已经 300+ MB，翻倍不划算），要么对整棵树 lipo（不现实）；Intel Mac 暂不支持。
 
@@ -109,11 +109,42 @@ CI 的 `macos-14` runner（Apple Silicon）能打出 dmg，`.github/workflows/re
 - `src/main/tray.js`：mac 菜单栏要**纯黑 + alpha 的 template 图**（文件名以 `Template` 结尾，Electron/macOS 自动适配浅色/深色菜单栏），彩色图标 resize 到 16px 在深色菜单栏里是一坨糊的方块——`scripts/gen-icon.mjs` 用 `dest-in` 合成单独出这一份
 - `src/main/index.js`：补了 `app.on('activate')`（点 Dock 图标叫回窗口），`window-all-closed` 不退出这条保留（mac 原生习惯）；全局快捷键 `register()` 的返回值现在会检查并打日志——mac 上这个组合键撞车的概率比 Windows 高
 
-### 真机验证清单（不要照抄网上的配置）
+### 签名：electron-builder 不会自动 ad-hoc 签，得自己来
 
-这轮改动**只在 CI 上验证到「dmg 能打出来，解开看内部结构对」**——kernel/ 是目录树不是归档、plugins/profile/ 的 5 个 tgz 都在。以下四条只有真机能验，见 `macos-deferred.md`（已改名为验证清单，只留这四条）：
+**这条假设错了整整一轮，写下来免得再错。** 原以为 electron-builder 找不到证书时会退化成 ad-hoc 签名，实测**它是整个跳过**：
 
-1. electron-builder 没有 identity 时会不会自动 ad-hoc 签 `.app`
-2. 它签的时候会不会破坏 `extraResources` 里已有的签名（npm 那些 darwin 二进制本来是签好的）
-3. Hardened Runtime 开不开——倾向于不开，但要实测确认 Electron 自己不依赖它
-4. 走一遍真实用户路径：下载 dmg → 打开 → 拖进 Applications → 首次启动（会撞 Gatekeeper，要右键 → 打开）
+```
+• skipped macOS application code signing
+  reason=cannot find valid "Developer ID Application" identity ... allIdentities= 0 identities found
+```
+
+而 Apple Silicon 的内核**拒绝执行没有有效签名的二进制**（不是 Gatekeeper 弹窗，是根本起不来），加上 electron-builder 改动过 bundle、Electron 自带的签名此时已失效——那样打出来的 dmg 大概率打不开。
+
+所以 `scripts/after-pack.js` 里补了一步 `codesign --force --deep --sign -`，签完立刻 `--verify --deep --strict`，**失败即中止构建**：签不上等于打出一个在 Apple Silicon 上起不来的包，发出去比构建失败糟糕得多。
+
+**踩到的坑：`--deep` 会撞上悬空符号链接。** 第一次签完校验报 `No such file or directory` —— 内核树里有 4 条悬空的 `.bin` 链接（`pn` / `pnpm` / `pnx` / `pnpx`），因为 `prepare-kernel` **故意**把 pnpm 从 `node_modules` 搬到 `kernel/pnpm`（`PNPM_CLI_PATH` 认那个落点），`npm ci` 建的 `.bin` 入口就悬空了。Windows / Linux 上没人读 `.bin`，躺了两轮没暴露。修在源头（`dropOrphanedBinShims`），不是去掉 `--deep` 绕过校验。
+
+> 这是**第三个**「换个平台才炸」的隐性问题，跟 electron 44 没有 postinstall、内核树按平台锁死是同一类：本机碰巧没事，全新环境必炸。
+
+**意外之喜：`--deep` 没有覆盖 `extraResources` 里已有的签名。** CI 上验过，`kernel/node` 仍然带着 Node.js 基金会的 `TeamIdentifier=HX7739G8FX` —— 它在 `Contents/Resources/` 下，不属于 `--deep` 会重签的标准嵌套代码位置。所以「我们签会不会破坏别人的签名」这个担心不成立。
+
+### CI 上已经验到的（macos runner 本身就是一台真 Apple Silicon）
+
+`build-mac` job 打完包会挂载 dmg 查一遍，这些**不需要借机器**：
+
+```
+内核是展开的目录树、没有 kernel.tar   ← 就地解包会破坏 .app 签名
+kernel/node: Mach-O 64-bit executable arm64   ← 原生 arm64
+随包插件 tgz 5 个、托盘 template 图在
+codesign: valid on disk / satisfies its Designated Requirement
+CodeDirectory flags=0x2(adhoc)
+```
+
+### 真机验证清单（只剩两条）
+
+前两条已由 CI 回答（见上）。借到 Mac 后只剩：
+
+1. **Hardened Runtime 开不开** —— 不公证的话通常不需要，开了反而要处理 spawn 子进程的 entitlements。倾向于不开，但要实测确认 Electron 自己不依赖它。
+2. **走一遍真实用户路径** —— 下载 dmg → 打开 → 拖进 Applications → 首次启动。会撞 Gatekeeper（未公证），需要右键 →「打开」。要确认的是：这条路走得通、且走通之后一切正常（内核起得来、插件在、托盘图标是单色的、红绿灯位置对得上标题栏）。
+
+> **红绿灯位置**：`src/preload/index.js` 的 `MAC_TRAFFIC_LIGHT_ZONE = 78` 是估算值，没有真机核对过。如果发现标题栏左段的色块跟红绿灯没对齐（露色缝或盖住红绿灯），调这个数字即可，逻辑不用动。
