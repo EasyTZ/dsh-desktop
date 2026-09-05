@@ -6,6 +6,18 @@
 
 `collect-release.mjs` 按 `package.json` 的 `version` **精确匹配**产物名，改版本号时 dist/ 里的旧产物不会被误选；结束时还会报一次本次打进包的内核版本（产物文件名上只有应用版本号，而内核是独立升级的另一条线，发布说明里要写「内置内核 x.y.z」）。发版流程：改 `package.json` version → 在 CHANGELOG.md 加一节 → 打 tag → push tag → CI 出包（`.github/workflows/release.yml`）。本地 `npm run dist` 保留，作为打 tag 前的快速验证手段。
 
+## Electron 二进制要自己补
+
+`electron-builder.yml` 里配了 `electronDist: node_modules/electron/dist`（复用本机已下载的那份，实现「一次安装、反复打包」，不再每次联网校验 SHASUMS256.txt）。代价是这个目录**必须**存在。
+
+而 **electron 44 的包里根本没有 `scripts` 字段** —— 二进制下载从 postinstall 改成了显式的 `bin: install-electron`。也就是说 `npm install` / `npm ci` **都不会**产生 `dist/`。老版本 electron 靠 postinstall 装，升到 44 之后这条链断了，本机一直没暴露只是因为 `dist/` 是更早以前留下来的。
+
+第一次上 CI 就撞了这个：`npm ci` 9 秒装完 286 个包（117MB 的 Electron 显然没下），然后 electron-builder 报 `The specified electronDist does not exist`。
+
+修在 `dist.mjs`（调 electron-builder 之前补一次，幂等）而不是只在 workflow 里加一步 —— 这是**打包**的前置条件、不是 CI 的前置条件，全新 clone 的开发机同样会踩。本地和 CI 必须走同一条路径，否则两边分别踩坑。
+
+顺带：electron-builder 检测到 CI 环境会**隐式开启发布**（日志里 "Implicit publishing triggered by CI detection"），也就是它会自己去建 / 改 GitHub Release。发布由 workflow 里那一步显式负责，两边同时动 Release 迟早出事，所以命令行写死 `--publish never`。这个隐式行为在 electron-builder v27 会被移除，早点写死反而少一次将来的意外。
+
 ## 为什么上 CI
 
 `npm run dist` 里最有价值的一步是 `verify-kernel`——它会**真的启动一次内核**等就绪，这是唯一能捕获「裁剪把运行时真要用的文件删掉了」这类错误的手段，而这件事只能在目标平台上做（Windows 的内核布局、可执行位、路径分隔符都跟 macOS / Linux 不一样）。多端打包意味着这道自检要在四个平台上各做一次，本机手动切系统跑不现实，CI 矩阵是唯一合理的落点——仓库是公开的，GitHub Actions 免费、不限分钟数，没有额外成本。

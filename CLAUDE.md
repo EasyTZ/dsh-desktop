@@ -51,7 +51,7 @@ npm run icon             # 仅在改了 build/logo.svg 后重新生成 icon.png/
 
 跑单个测试文件：`node --test test/version.test.js`；按名字跑单个用例：`node --test --test-name-pattern "prerelease" "test/*.test.js"`。
 
-打包机前置：Node ≥ 22、仓库根 `npm install`（拉插件 git 依赖，见下方「插件拆分后的开发内环」）。内核不再要求预装全局 `dsh` / `pnpm`——`prepare-kernel` 按 `kernel-src/` 声明的版本联网 `npm ci` 装出来，见 docs/decisions/packaging.md。
+打包机前置：Node ≥ 22、仓库根 `npm install`（拉插件 git 依赖，见下方「插件拆分后的开发内环」）。内核不再要求预装全局 `dsh` / `pnpm`——`prepare-kernel` 按 `kernel-src/` 声明的版本联网 `npm ci` 装出来，见 docs/decisions/packaging.md。Electron 二进制也不用管：**electron 44 起包里没有 postinstall**，`npm install` 不会下载它，`dist.mjs` 会在调 electron-builder 之前自己补上（幂等）。
 
 ## 架构
 

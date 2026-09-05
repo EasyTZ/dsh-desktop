@@ -76,6 +76,35 @@ function pruneOtherVersions() {
   for (const name of removed) console.log(`  - ${name}`);
 }
 
+/**
+ * 确保 `node_modules/electron/dist` 存在。
+ *
+ * `electron-builder.yml` 里配了 `electronDist: node_modules/electron/dist`（复用
+ * 本机已下载的那份，不让 electron-builder 每次打包都重下），所以这个目录**必须**
+ * 存在，否则 electron-builder 直接报 "The specified electronDist does not exist"。
+ *
+ * 坑在于：**electron 44 的包里根本没有 `scripts` 字段**，二进制下载从 postinstall
+ * 改成了显式的 `bin: install-electron`。也就是说 `npm install` / `npm ci` 都不会
+ * 产生这个目录 —— 老版本 electron 是靠 postinstall 装的，升级到 44 之后这条链断了，
+ * 本机之所以一直没暴露，只是因为 dist/ 是更早以前留下来的。
+ *
+ * 全新 clone 的机器（CI 上第一次跑就是这样）必然踩到，所以放在这里而不是只在
+ * workflow 里补一句：这是**打包**的前置条件，不是 CI 的前置条件，本地和 CI 得走
+ * 同一条路径，否则两边分别踩坑。
+ *
+ * install.js 是幂等的：已经装好时立刻退出，不重复下载。
+ */
+function ensureElectronBinary() {
+  const installer = join(root, 'node_modules', 'electron', 'install.js');
+  if (existsSync(join(root, 'node_modules', 'electron', 'dist'))) return;
+  if (!existsSync(installer)) {
+    console.error('[dist] 找不到 node_modules/electron —— 先跑 npm install');
+    process.exit(1);
+  }
+  console.log('[dist] node_modules/electron/dist 不存在，下载 Electron 二进制…');
+  execFileSync(process.execPath, [installer], { cwd: root, stdio: 'inherit' });
+}
+
 const git = (repo, args) =>
   execFileSync('git', args, { cwd: repo, encoding: 'utf8', windowsHide: true }).trim();
 
@@ -197,7 +226,15 @@ try {
   run('pack-profile-plugins.mjs');
   run('verify-kernel.mjs');
   run('pack-kernel.mjs');
-  runCmd(dirOnly ? 'npx electron-builder --win --dir' : 'npx electron-builder --win');
+  ensureElectronBinary();
+  // `--publish never`：electron-builder 检测到 CI 环境会**隐式开启发布**（日志里
+  // 那句 "Implicit publishing triggered by CI detection"），也就是它会自己去建
+  // / 改 GitHub Release。发布这件事由 workflow 里那一步显式负责，两边同时动
+  // Release 迟早出事，而且这个隐式行为在 electron-builder v27 会被移除，早点写死
+  // 反而少一次将来的意外。本地跑没有 CI 环境变量，加不加都一样。
+  runCmd(dirOnly
+    ? 'npx electron-builder --win --dir --publish never'
+    : 'npx electron-builder --win --publish never');
   if (!dirOnly) {
     run('collect-release.mjs');
     // --dir 模式不出安装包，这时候清理会把上一版的安装包删掉却没有新的顶上，
