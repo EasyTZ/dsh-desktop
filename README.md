@@ -29,6 +29,7 @@
 - **插件市场** —— 侧边栏直接搜、直接装，不用碰命令行。自带的几个插件也在这里管，可以随时停用或卸载，卸了还能一键装回来。
 - **完整 dsh 能力** —— 会话、文件、终端、搜索、子代理，一个不少。
 - **原生桌面观感** —— 无边框窗口 + 自定义标题栏，浅色 / 深色 / 跟随系统主题。
+- **Windows 与 Linux 都能跑** —— 同一套代码、同一个内核，Windows 出安装包与绿色版，Linux 出 AppImage，下载即用。
 
 ---
 
@@ -92,6 +93,9 @@
 | 启动失败并弹出错误框 | 错误框里有原因摘要；多为内核损坏，可在更新窗口点更新重装内核 |
 | 装了插件但没反应 | 插件要重启内核才生效，右键托盘 → 退出后重新打开 |
 | 装了某个插件后启动就崩 | 崩溃提示框上点「安全模式启动」，进去把它停用或卸载，再正常重启 |
+| Linux 上 AppImage 双击没反应 | 多半缺 FUSE 2。先试 `./xxx.AppImage --appimage-extract-and-run`，能跑就装一下发行版的 fuse 包 |
+| Linux 上启动报缺少某个 `.so` | 缺常见图形库（GTK3 / NSS / ALSA 之类）。报错会写明缺哪个，按名字装即可 |
+| Linux 上没有托盘图标 | 部分桌面环境不带 libappindicator。应用会照常运行，只是少了托盘入口——用 `Ctrl + Alt + Space` 唤出窗口 |
 
 ---
 
@@ -116,23 +120,21 @@
 
 > 仅开发者需要，普通用户跳过。架构设计、插件契约与踩坑记录详见 [CLAUDE.md](CLAUDE.md)。
 
-**前置条件**：[Node.js](https://nodejs.org) ≥ 22，并全局安装 dsh 与 pnpm：
+**前置条件**：只要 [Node.js](https://nodejs.org) ≥ 22。
 
-```powershell
-npm install -g @deepseek-ai/dsh
-npm install -g pnpm
-```
+不需要全局装 `dsh` 或 `pnpm` —— 内核由 `prepare-kernel` 按 `kernel-src/` 里声明的精确版本联网 `npm ci` 装出来，跟打包机上碰巧装了什么无关（理由见 [packaging.md](docs/decisions/packaging.md)）。
 
-> 国内网络下载 Electron 慢，可先设镜像：
+> 国内网络下载 Electron 与打包工具很慢，建议先设镜像：
 > ```powershell
 > $env:ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
 > $env:ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"
 > ```
+> 注意 **electron 44 起包里没有 postinstall**，`npm install` 并不会下载 Electron 二进制；真正下载它的是 `npm run dist`（`dist.mjs` 会在调 electron-builder 之前自己补上，幂等）。
 
 **常用命令**：
 
 ```powershell
-npm install              # 装依赖（首次会下 Electron）
+npm install              # 装依赖（不含 Electron 二进制，见上）
 npm start                # 开发态运行（外壳 spawn 本机全局 dsh）
 npm test                 # 单元测试（node:test，零第三方依赖）
 npm run typecheck        # tsc --checkJs 静态检查（无编译产物）
@@ -143,7 +145,23 @@ npm run link-plugins     # 联调插件：改同级插件仓库的代码即刻�
 npm run plugins-status   # 看插件当前是「钉 tag」还是「联调」
 ```
 
-`npm run dist` 会依次执行 校验插件 pin → prepare-kernel → 打插件 tgz → 内核自检 → 打包，产物落在 `release/`。发版走 CI：改版本号、加 CHANGELOG、打 tag、push tag，`.github/workflows/release.yml` 会在 GitHub Actions 上跑完整条流水线并把产物发布到 [Releases](https://github.com/EasyTZ/dsh-desktop/releases)；本地 `npm run dist` 保留作为打 tag 前的快速验证。
+`npm run dist` 依次执行 校验插件 pin → 装内核 → 打插件 tgz → **内核自检** → 打包 → 收产物。中间那步自检会**真的把内核启动一次**等它就绪，这是唯一能挡住「裁剪把运行时真要用的文件删掉了」这类错误的手段。
+
+**发版走 CI，本地不用打包**：
+
+```powershell
+# 1. 改 package.json 的 version
+# 2. 在 CHANGELOG.md 加一节
+# 3. 打 tag 并推送
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+推 tag 会触发 [`.github/workflows/release.yml`](.github/workflows/release.yml)：Windows 与 Linux 两个 job 并行打包，各自跑完整条流水线（含内核自检），产物汇合后一次性发布到 [Releases](https://github.com/EasyTZ/dsh-desktop/releases)。
+
+**日常 `git push` 不会触发发版**，只会跑 [`ci.yml`](.github/workflows/ci.yml)（测试 + 类型检查）。本地 `npm run dist` 保留，作为打 tag 前的快速验证。
+
+> 为什么打包非要上 CI：内核自检只能在**目标平台**上做，而多端意味着要在几个平台上各做一次。跨平台交叉打包做不到这件事。详见 [multiplatform.md](docs/decisions/multiplatform.md)。
 
 **插件开发**：五个插件（插件市场、Git 面板、终端面板、余额显示、在资源管理器中打开）都是[独立仓库](https://github.com/EasyTZ?tab=repositories&q=dsh-)，以 `@easytz/*` 发布，本仓库按钉住的 tag 作为 git 依赖引用，只为打成 tgz 放进安装包。
 
