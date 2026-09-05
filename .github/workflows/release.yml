@@ -68,7 +68,7 @@ jobs:
       # 而每份 370MB+，没必要占着默认的 90 天。
       - name: 上传产物（仅手动调试时）
         if: github.ref_type != 'tag'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: windows-dist-${{ github.run_id }}
           path: release/*
