@@ -1,9 +1,11 @@
-# 发版流水线：把本机手动 `npm run dist` 搬到 CI 上，先只跑 Windows。
+# 发版流水线：把本机手动 `npm run dist` 搬到 CI 上。
 #
-# 为什么先只跑 Windows：`npm run dist` 里最有价值也最慢的一步（verify-kernel）
-# 会真的启动一次内核，这件事只能在目标平台上做——流水线本身的坑（拉插件的
-# git 依赖、npm 缓存、200MB+ 产物上传、Release 写权限）跟平台无关，在已知
-# 正确的 Windows 上先趟掉，之后加 Linux / macOS 矩阵只需要面对平台差异。
+# 先只跑 Windows 那一版做出的判断在这里也成立：`npm run dist` 最有价值也最慢的
+# 一步（verify-kernel）会真的启动一次内核，这件事只能在目标平台上做——所以加
+# Linux 用的是**独立 job**，不是一个 os 矩阵。矩阵适合「同一套 steps，只是
+# runs-on 不同」的场景；这里 Windows 用 pwsh 读内核版本、Linux 用 bash 读，
+# 两边的 electron-builder 目标（--win / --linux）、产物文件名、后续要不要处理
+# nsis 也完全不同——摊开成矩阵反而要塞一堆 if 分支，不如两个 job 各自直给。
 # 详见 docs/decisions/packaging.md「为什么上 CI」。
 name: Release
 
@@ -13,7 +15,7 @@ on:
       - 'v*'
   # 第一次调试不可能靠反复打 tag 来试，手动触发是必须的。从 UI 选择某个已有
   # tag 作为 ref 手动跑，可以完整测到下面的发布步骤；从默认分支手动跑则只验
-  # 证打包本身，不会碰 Release（见下面「发布到 Release」的 if 条件）。
+  # 证打包本身，不会碰 Release（见 publish job 的 if 条件）。
   workflow_dispatch:
 
 permissions:
@@ -26,6 +28,8 @@ jobs:
     # 上限：真卡住时（verify-kernel 的 90s 预算只覆盖「等地址行」那一段，
     # 别的步骤没有各自的超时）不至于白占 runner 到默认的 6 小时。
     timeout-minutes: 60
+    outputs:
+      kernel-version: ${{ steps.kernel.outputs.version }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v5
@@ -43,15 +47,13 @@ jobs:
 
       # dist.mjs 自己会跑完 校验插件 pin → prepare-kernel → 打插件 tgz →
       # 内核自检 → electron-builder → collect-release 整条链路，产物落在 release/。
-      # 这里不拆开写成多个 step，理由见 scripts/dist.mjs 顶部注释：拆开会丢失
-      # 「联调模式自动收尾」这层保护，而 CI 上本来就没有联调，拆不拆看不出差别，
-      # 但拆开之后本地和 CI 就变成两条不同的路径，两边分别踩坑。
+      # 显式传 --win，不依赖「猜的默认值恰好是 win」——CI 上意图要写清楚。
       - name: 打包
-        run: npm run dist
+        run: npm run dist -- --win
 
       # 产物文件名里只有应用版本号，内核是独立升级的另一条线，发布说明必须
       # 单独写清楚这次打进包的内核版本——collect-release.mjs 在控制台打印过
-      # 一次，这里换成读同一份 package.json，作为后续 step 能用的输出。
+      # 一次，这里换成读同一份 package.json，作为后续 step / job 能用的输出。
       - name: 读取本次内置内核版本
         id: kernel
         shell: pwsh
@@ -60,28 +62,96 @@ jobs:
           $version = (Get-Content -Raw $pkgPath | ConvertFrom-Json).version
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-      # 非 tag 的手动触发（调试用）没有 Release 可传，产物会随 runner 一起消失，
-      # 于是「跑绿了」之外什么都验不到 —— 而绿灯只证明构建没报错，不证明装出来
-      # 能跑。传成 Actions artifact，调试时能下下来真装一次。
-      #
-      # 只保留 7 天：这不是给终端用户下载的渠道（那是 Release），纯粹是调试残留，
-      # 而每份 370MB+，没必要占着默认的 90 天。
-      - name: 上传产物（仅手动调试时）
-        if: github.ref_type != 'tag'
+      # 两个平台各自的产物都先落到 Actions artifact，真正发布交给下面的 publish
+      # job 统一做——原因见文件头注释：避免 Windows / Linux 两个 job 各自调用
+      # 一次 action-gh-release，同时对着同一个刚创建的 Release 抢着建，产生竞态。
+      # 只保留 7 天：这不是给终端用户下载的渠道（那是 Release），nightly 调试
+      # 完就没用了，每份 370MB+，没必要占着默认的 90 天。
+      - name: 上传 Windows 产物
         uses: actions/upload-artifact@v5
         with:
-          name: windows-dist-${{ github.run_id }}
+          name: release-windows
           path: release/*
           retention-days: 7
 
-      # 只在真正由 tag 触发（push tag，或 workflow_dispatch 手动选了某个 tag）
-      # 时才发布：手动从分支跑只是想验证打包本身能不能过，不该产生一个 Release。
+  build-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      kernel-version: ${{ steps.kernel.outputs.version }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # AppImage 是 squashfs 镜像，没有 Windows 那套「打 tar 省资源管理器解压时间」
+      # 的理由（见 scripts/pack-kernel.mjs 头部注释），dist.mjs 传 --linux 之后会
+      # 自己跳过打 tar，extraResources 直接吃 kernel/ 目录。
+      - name: 打包
+        run: npm run dist -- --linux
+
+      - name: 读取本次内置内核版本
+        id: kernel
+        shell: bash
+        run: |
+          version=$(node -p "require('./kernel/runtime/node_modules/@deepseek-ai/dsh/package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: 上传 Linux 产物
+        uses: actions/upload-artifact@v5
+        with:
+          name: release-linux
+          path: release/*
+          retention-days: 7
+
+  # 只在真正由 tag 触发（push tag，或 workflow_dispatch 手动选了某个 tag）时才
+  # 发布：手动从分支跑只是想验证打包本身能不能过，不该产生一个 Release。
+  #
+  # 两个平台的产物在这里汇合成同一次 action-gh-release 调用——这是「合并到同一个
+  # Release」问题的答案：不是让两个 build job 各发各的，而是都发去 job artifact，
+  # 由这个下游 job 一次性收集、一次性发布，天然不会有谁先谁后创建 Release 的竞态。
+  publish:
+    needs: [build-windows, build-linux]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载 Windows 产物
+        uses: actions/download-artifact@v5
+        with:
+          name: release-windows
+          path: release
+
+      - name: 下载 Linux 产物
+        uses: actions/download-artifact@v5
+        with:
+          name: release-linux
+          path: release
+
+      # 两个 job 装的是同一份 kernel-src/ 声明，理论上版本必然相同；万一将来
+      # 谁改漏了导致不一致，这里直接报错，好过发布说明里悄悄写错一个版本号。
+      - name: 核对两个平台的内核版本一致
+        run: |
+          win="${{ needs.build-windows.outputs.kernel-version }}"
+          linux="${{ needs.build-linux.outputs.kernel-version }}"
+          echo "windows=$win linux=$linux"
+          if [ "$win" != "$linux" ]; then
+            echo "两个平台打进包的内核版本不一致：windows=$win linux=$linux" >&2
+            exit 1
+          fi
+
       - name: 发布到 Release
-        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           files: release/*
           body: |
-            本次内置内核：dsh ${{ steps.kernel.outputs.version }}
+            本次内置内核：dsh ${{ needs.build-windows.outputs.kernel-version }}
 
             完整更新日志见 [CHANGELOG.md](https://github.com/EasyTZ/dsh-desktop/blob/main/CHANGELOG.md)。

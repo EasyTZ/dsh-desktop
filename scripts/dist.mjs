@@ -1,7 +1,13 @@
 // 打包总入口：自动收尾联调模式，打完再恢复。
 //
-//   node scripts/dist.mjs        完整打包（出安装包 + 收进 release/）
-//   node scripts/dist.mjs --dir  只出 win-unpacked
+//   node scripts/dist.mjs           完整打包（产物收进 release/），目标平台按
+//                                    当前系统猜（Windows 上 --win，其它 --linux）
+//   node scripts/dist.mjs --linux   显式指定目标平台（--win / --linux / --mac）
+//   node scripts/dist.mjs --dir     只出 unpacked 目录，不出安装包/AppImage
+//
+// 目标平台只是猜的默认值，不是跨平台交叉编译的开关——electron-builder 打 AppImage
+// 仍然要在 Linux 机器上跑（原生模块、图标工具链都是平台相关的）。这里接受参数
+// 纯粹是为了让 CI 的 Linux job 能显式写 `--linux`，不必依赖「猜的默认值恰好猜对」。
 //
 // 为什么要包一层，而不是让人自己记着 unlink：联调模式可以常开，唯独打包这一步
 // 必须用钉住的版本（`pack-profile-plugins` 的 `npm pack` 打的是 node_modules 里
@@ -26,6 +32,8 @@ const workspace = resolve(root, '..');
 const UNLINK_MARKER = join(root, '.dist-unlinked');
 const dirOnly = process.argv.includes('--dir');
 const isWin = process.platform === 'win32';
+const targetArg = process.argv.find((a) => a === '--win' || a === '--linux' || a === '--mac');
+const target = targetArg ? targetArg.slice(2) : (isWin ? 'win' : process.platform === 'darwin' ? 'mac' : 'linux');
 
 const run = (file, args = []) =>
   execFileSync(process.execPath, [join(root, 'scripts', file), ...args], { cwd: root, stdio: 'inherit' });
@@ -225,7 +233,7 @@ try {
   // 插件播种进隔离 home，否则验的是一个没有插件的内核（见 verify-kernel.mjs 顶部）。
   run('pack-profile-plugins.mjs');
   run('verify-kernel.mjs');
-  run('pack-kernel.mjs');
+  run('pack-kernel.mjs', [`--${target}`]);
   ensureElectronBinary();
   // `--publish never`：electron-builder 检测到 CI 环境会**隐式开启发布**（日志里
   // 那句 "Implicit publishing triggered by CI detection"），也就是它会自己去建
@@ -233,8 +241,8 @@ try {
   // Release 迟早出事，而且这个隐式行为在 electron-builder v27 会被移除，早点写死
   // 反而少一次将来的意外。本地跑没有 CI 环境变量，加不加都一样。
   runCmd(dirOnly
-    ? 'npx electron-builder --win --dir --publish never'
-    : 'npx electron-builder --win --publish never');
+    ? `npx electron-builder --${target} --dir --publish never`
+    : `npx electron-builder --${target} --publish never`);
   if (!dirOnly) {
     run('collect-release.mjs');
     // --dir 模式不出安装包，这时候清理会把上一版的安装包删掉却没有新的顶上，

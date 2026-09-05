@@ -12,9 +12,11 @@ files:
   - src/**/*
   - package.json
 extraResources:
-  # 内核以单个 kernel.tar.gz 的形式打进包，首次启动时由主进程铺开。
-  # 为什么不直接铺：资源管理器解 zip 的耗时由文件个数决定 —— 15444 个文件要 181 秒，
-  # 打成一个文件后用户那一步几乎瞬间完成。详见 scripts/pack-kernel.mjs。
+  # 内核以单个 kernel.tar.gz 的形式打进包，首次启动时由主进程铺开。**仅 Windows
+  # 需要**：资源管理器解 zip 的耗时由文件个数决定 —— 15444 个文件要 181 秒，打成
+  # 一个文件后用户那一步几乎瞬间完成，详见 scripts/pack-kernel.mjs。Linux 的
+  # AppImage 是 squashfs 镜像，根本没有「逐文件解压」这一步，前提不成立——linux
+  # 段下面整段覆盖成直接打包 kernel/ 目录，不经过 kernel-dist。
   - from: kernel-dist
     to: kernel
     filter:
@@ -45,3 +47,34 @@ nsis:
   createStartMenuShortcut: true
   shortcutName: DeepSeek Harness Desktop
   artifactName: DeepSeek-Harness-Desktop-Setup-${version}.${ext}
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+  # freedesktop.org 分类，AppImage 的 .desktop 条目要用；这个应用是给开发者用的
+  # 桌面壳，没有更贴切的官方分类，选 Development。
+  category: Development
+  # 单文件 ≥512 即可：electron-builder 会拿它自动切出 Linux 需要的整套图标尺寸，
+  # 不需要像 mac 的 icns 那样自己准备目录。build/icon.png 现在是 1024，见
+  # scripts/gen-icon.mjs。
+  icon: build/icon.png
+  artifactName: DeepSeek-Harness-Desktop-${version}.${ext}
+  # 内核不打 tar，kernel/ 目录整棵原样交给 extraResources——squashfs 没有
+  # 「逐文件解压」这一步，打 tar 只会多一层无意义的解压。（任务 7 的 macOS
+  # 也会走这条：就地解包会破坏 .app 的代码签名。）
+  #
+  # 这段跟顶层 extraResources 是**合并**关系，不是覆盖（实测 VM 上打包时顶层
+  # 那条 `from: kernel-dist` 也会被 electron-builder 尝试处理一次，只是此时源路径
+  # 必然不存在——pack-kernel.mjs 在非 win 目标下已经删掉了 kernel-dist——所以
+  # 只打印一条无害的 "file source doesn't exist" 警告，不影响构建）。
+  extraResources:
+    - from: kernel
+      to: kernel
+      filter:
+        - "**/*"
+    - from: plugins-dist
+      to: plugins
+      filter:
+        - "**/*"
+    - from: build/icon.png
+      to: icon.png

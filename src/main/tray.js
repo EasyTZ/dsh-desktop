@@ -42,15 +42,25 @@ function buildTrayMenu({ onShow, onQuit, onCheckUpdate, onFeedback, kernelVersio
 
 /**
  * @param {{onShow: () => void, onQuit: () => void, onCheckUpdate: () => void, onFeedback: () => void, kernelVersion?: string|null}} opts
+ * @returns {import('electron').Tray|null} 失败（多半是 Linux 缺 libappindicator）时返回 null
  */
 function createTray(opts) {
   const icon = iconPath();
   const img = icon ? nativeImage.createFromPath(icon) : nativeImage.createEmpty();
-  const tray = new Tray(img.resize({ width: 16, height: 16 }));
-  tray.setToolTip('DeepSeek Harness Desktop');
-  tray.setContextMenu(buildTrayMenu(opts));
-  tray.on('double-click', opts.onShow);
-  return tray;
+  try {
+    const tray = new Tray(img.resize({ width: 16, height: 16 }));
+    tray.setToolTip('DeepSeek Harness Desktop');
+    tray.setContextMenu(buildTrayMenu(opts));
+    tray.on('double-click', opts.onShow);
+    return tray;
+  } catch (error) {
+    // Linux 的系统托盘依赖 libappindicator，部分发行版 / 桌面环境没装，
+    // `new Tray()` 会直接抛。托盘只是「最小化到后台」的一个入口，不是核心功能，
+    // 不该因为它拿不到就让整个应用起不来——降级为无托盘图标运行，调用方
+    // （src/main/index.js）已经处处判了 `if (tray)`，null 能安全流过去。
+    console.error('[tray] 创建托盘失败，以无托盘模式继续运行:', error?.message ?? error);
+    return null;
+  }
 }
 
 module.exports = { createTray, buildTrayMenu, checkUpdateLabel };

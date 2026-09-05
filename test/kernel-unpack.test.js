@@ -48,10 +48,20 @@ test('内置解包器：还原出的文件与源逐字节一致（含超长路�
   try {
     const expected = makeSourceTree(src);
     const archive = path.join(tmp, ARCHIVE_NAME);
-    // 跟 scripts/pack-kernel.mjs 同一条命令，额外加 hdrcharset：Windows 的 bsdtar 在
-    // ustar 下默认按系统代码页写非 ASCII 文件名，这里要验的是解包器对 UTF-8 名字
-    // 的处理（真实内核树全是 ASCII 路径，pack-kernel 里有断言守着）。
-    execFileSync(resolveTarCommand(), ['-cf', archive, '--format=ustar', '--options', 'hdrcharset=UTF-8', '-C', src, '.'], { windowsHide: true });
+    // 跟 scripts/pack-kernel.mjs 同一条命令，Windows 上额外加 hdrcharset：那边的
+    // bsdtar 在 ustar 下默认按**系统 ANSI 代码页**写非 ASCII 文件名，这里要验的是
+    // 解包器对 UTF-8 名字的处理（真实内核树全是 ASCII 路径，pack-kernel 里有断言
+    // 守着）。
+    //
+    // **只在 win32 加**：`--options` 是 bsdtar/libarchive 专属参数，Linux 上
+    // `resolveTarCommand()` 落到 PATH 里的 GNU tar，它不认这个参数、直接报
+    // `unrecognized option '--options'`，整个用例就挂了（实测 openEuler 的
+    // GNU tar 1.34）。而这个参数本来就是为了绕过 Windows 那个代码页行为才加的
+    // —— 别的平台的 tar 按进程 locale 写文件名，本来就是 UTF-8，不需要声明。
+    const tarArgs = ['-cf', archive, '--format=ustar'];
+    if (process.platform === 'win32') tarArgs.push('--options', 'hdrcharset=UTF-8');
+    tarArgs.push('-C', src, '.');
+    execFileSync(resolveTarCommand(), tarArgs, { windowsHide: true });
 
     await extractUstar(archive, out);
 

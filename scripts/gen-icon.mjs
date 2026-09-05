@@ -56,13 +56,22 @@ function encodeIco(images) {
 }
 
 // 覆盖托盘(16/20/24/32)、开始菜单(24/32/48)、桌面(48/64)、大图标(128/256)。
-const SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256];
-const images = [];
-for (const size of SIZES) {
-  images.push({ size, buf: await render(size) });
+// ICO 目录项的宽高用单字节表示（`encodeIco` 里 `size >= 256 ? 0 : size`，0 记作
+// 256），超过 256 的尺寸也只能写 0，多个不同尺寸的图挤在同一个 0/0 上会互相
+// 覆盖——ICO 格式本身就不支持大于 256 的尺寸，所以 ICO 只到 256 封顶。
+const ICO_SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256];
+// build/icon.png 单独渲染一张更大尺寸：Linux AppImage 建议 ≥512（electron-builder
+// 拿它自动生成 Linux 图标集），macOS icns 要求 ≥512 否则直接报错（任务 7 铺路）。
+// PNG 没有 ICO 那个单字节尺寸限制，选 1024 留出余量。
+const PNG_SIZE = 1024;
+
+const icoImages = [];
+for (const size of ICO_SIZES) {
+  icoImages.push({ size, buf: await render(size) });
 }
+const pngBuf = await render(PNG_SIZE);
 
 mkdirSync(join(root, 'build'), { recursive: true });
-writeFileSync(join(root, 'build', 'icon.png'), images[images.length - 1].buf);
-writeFileSync(join(root, 'build', 'icon.ico'), encodeIco(images));
-console.log('已生成 build/icon.png（256）与 build/icon.ico（16~256 多尺寸，鲸鱼填满）');
+writeFileSync(join(root, 'build', 'icon.png'), pngBuf);
+writeFileSync(join(root, 'build', 'icon.ico'), encodeIco(icoImages));
+console.log('已生成 build/icon.png（1024）与 build/icon.ico（16~256 多尺寸，鲸鱼填满）');

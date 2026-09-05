@@ -16,6 +16,12 @@
 // `--format=ustar` 是刻意指定的：运行时的兜底解包器只实现 ustar（GNU/PAX 扩展头会
 // 让解析复杂一大截）。本仓库最长相对路径 196 字符，ustar 的 100+155 放得下；万一
 // 将来某个依赖的路径超限，tar 会在这里直接失败 —— **构建期炸，好过用户首启炸**。
+//
+// **这套「打 tar」只对 Windows 成立**：上面整段理由都是「资源管理器解 zip 慢」，
+// 而 Linux 的 AppImage 是 squashfs 镜像，从来没有「逐文件解压」这一步，前提不存在。
+// 所以非 Windows 目标直接跳过，electron-builder.yml 的 linux 段把 extraResources
+// 指向 kernel/ 目录本身。目标平台由 dist.mjs 传下来的 --win/--linux 决定，不传时
+// 按当前系统猜（本地单独跑本脚本调试时的兜底）。
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -31,9 +37,21 @@ const kernelDir = join(root, 'kernel');
 const outDir = join(root, 'kernel-dist');
 const archivePath = join(outDir, 'kernel.tar');
 
+const targetArg = process.argv.find((a) => a === '--win' || a === '--linux' || a === '--mac');
+const target = targetArg ? targetArg.slice(2) : (process.platform === 'win32' ? 'win' : process.platform === 'darwin' ? 'mac' : 'linux');
+
 if (!existsSync(kernelDir)) {
   console.error(`[pack-kernel] 找不到内核目录：${kernelDir}（先跑 prepare-kernel）`);
   process.exit(1);
+}
+
+if (target !== 'win') {
+  // 不打 tar：清掉可能残留的旧 kernel-dist，避免 electron-builder 的 win 段
+  // extraResources 万一被误用时打进一份过期归档（正常流程不会走到那条配置，
+  // 这里只是防呆）。electron-builder.yml 的 linux/mac 段直接吃 kernel/ 本身。
+  rmSync(outDir, { recursive: true, force: true });
+  console.log(`[pack-kernel] 目标平台 ${target}：AppImage/.app 没有「逐文件解压」这一步，跳过打 tar，extraResources 直接用 kernel/。`);
+  process.exit(0);
 }
 
 /**
