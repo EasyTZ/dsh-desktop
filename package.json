@@ -3,10 +3,6 @@
   "version": "1.7.2",
   "description": "DeepSeek Harness 桌面版 —— 以 dsh 为内核的 Windows 桌面应用",
   "main": "src/main/index.js",
-  "dshKernel": {
-    "_comment": "本版随包发布的 dsh 内核版本。打包时 prepare-kernel 会核对本机全局 dsh，对不上直接中止——换内核必须是一次有意的、跟着提交走的改动。",
-    "expected": "0.1.1-rc.2"
-  },
   "author": "EasyTZ",
   "license": "MIT",
   "private": true,

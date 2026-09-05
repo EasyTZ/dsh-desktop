@@ -1,5 +1,10 @@
 node_modules/
 kernel/
+kernel-staging/
+# kernel-src/ 只提交安装规格（package.json / package-lock.json / .npmrc），
+# 真正的安装发生在 kernel-staging/，这里理论上不该出现 node_modules——
+# 留一条防呆规则，防止有人手滑在这个目录里直接 npm install。
+kernel-src/node_modules/
 dist/
 _smoke/
 release/

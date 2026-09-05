@@ -42,7 +42,7 @@ npm run link-plugins     # 联调：把源码侧与运行侧两处都链到同�
 npm run unlink-plugins   # 手动解除联调（日常不需要，dist 会自己收尾）
 npm run plugins-status   # 看插件当前是「钉 tag」还是「联调」
 npm run refresh-plugins  # 改了 #tag 后强制重拉（绕开 npm 的 git 依赖缓存）
-npm run prepare-kernel   # 复制 node.exe + pnpm + 全局 dsh 依赖树到 kernel/
+npm run prepare-kernel   # 按 kernel-src/ 声明的版本，干净安装内核到 kernel/
 npm run dist             # 打包（自动临时解除联调、打完自动恢复）
 npm run dist:dir         # 同上但只出 win-unpacked（快速验证打包态）
 npm run pack-profile-plugins  # 把 profile 层插件 npm pack 成 tgz，摊到 plugins-dist/profile/
@@ -51,7 +51,7 @@ npm run icon             # 仅在改了 build/logo.svg 后重新生成 icon.png/
 
 跑单个测试文件：`node --test test/version.test.js`；按名字跑单个用例：`node --test --test-name-pattern "prerelease" "test/*.test.js"`。
 
-打包机前置：Node ≥ 22、`npm i -g @deepseek-ai/dsh`、`npm i -g pnpm`、仓库根 `npm install`（拉插件 git 依赖，见下方「插件拆分后的开发内环」）。
+打包机前置：Node ≥ 22、仓库根 `npm install`（拉插件 git 依赖，见下方「插件拆分后的开发内环」）。内核不再要求预装全局 `dsh` / `pnpm`——`prepare-kernel` 按 `kernel-src/` 声明的版本联网 `npm ci` 装出来，见 docs/decisions/packaging.md。
 
 ## 架构
 
