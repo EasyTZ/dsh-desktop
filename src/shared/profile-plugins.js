@@ -87,9 +87,12 @@ function loadProfilePluginIndex(dir) {
  *
  * 随包分发的插件分两类，判据完全不同 ——
  *
- * **`required: true`（目前只有插件市场）**：必须在，且版本必须是随包的那一版。用户
- * 卸不掉它（市场自己的保护名单挡着），装坏了下次启动自愈，应用回退时也跟着回退。
- * 判据是「不等就装」。
+ * **`required: true`（目前只有插件市场）**：必须在，且版本不能低于随包的那一版。
+ * 用户卸不掉它（市场自己的保护名单挡着），装坏了下次启动自愈。判据是「缺失或
+ * 落后就装」——**不降级**：市场自己就是那个「一键更新」按钮的来源，用户在应用
+ * 内把市场更新到比随包版本更新的版本后，这条自愈逻辑曾经会在下一次启动时把它
+ * 拉回随包版本，表现是「点了更新、重启后又变回旧版，且『有更新』提示还在」，
+ * 已修——跟非 required 那条「只升级不降级」是同一个判据，市场没有理由单独破例。
  *
  * **其余（随应用分发但用户自主管理的插件）**：首次启动时装上；用户在**同一随包
  * 版本**里卸载后，不会因为重启又回来。要区分「从没装过」和「装过但被卸了」，光看
@@ -109,8 +112,10 @@ function loadProfilePluginIndex(dir) {
  *
  * **联调态的包一律跳过**（`isLinked` 为真）。profile 里那份是 `npm run link-plugins`
  * 铺的 junction，指向同级工作副本；对账读到的「实际版本」就是工作副本 package.json
- * 里那个号，跟随包 tarball 的版本天然对不上。对 `required: true` 的市场来说这条
- * 「不等就装」当场生效：pnpm 把 junction 换成 tarball 解出来的实体目录，联调静默
+ * 里那个号，通常**领先**于随包 tarball 的版本（开发期这是常态）。改成「不降级」
+ * 之后这条本身已经不会再触发重装，但联调链接还是要单独跳过——工作副本的版本号
+ * 不一定总是领先（改小版本号、切分支都可能让它落后于随包版本），一旦落后就会被
+ * 判定成「需要升级」，pnpm 把 junction 换成 tarball 解出来的实体目录，联调静默
  * 失效——改完代码怎么都不生效，而日志里只有一句无关的 pnpm 报错。发行版里不存在
  * junction，这个分支永远不会命中，所以它不影响真实用户的自愈语义。
  *
@@ -126,8 +131,10 @@ function planProfileReconcile(desired, installedVersionOf, seeded = {}, isLinked
     if (isLinked(entry.packageName)) continue;
     const actual = installedVersionOf(entry.packageName);
     if (entry.required) {
-      // 恢复入口：不等就装（含降级——应用回退时插件也要跟着回到配套版本）。
-      if (actual !== entry.version) plan.push(entry);
+      // 恢复入口：缺失就装；落后于随包版本就升上去。不降级——用户可能自己在
+      // 应用内把市场更新到了更新的版本（见函数顶部注释），跟非 required 那条
+      // 分支用的是同一个判据。
+      if (actual === null || isNewer(entry.version, actual)) plan.push(entry);
       continue;
     }
     const everSeeded = Object.prototype.hasOwnProperty.call(seeded, entry.packageName);

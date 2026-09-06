@@ -15,11 +15,18 @@ const { summarizeStderr } = require('../shared/error-detail');
 const { needsUnpack, unpackKernel } = require('../shared/kernel-unpack');
 const { kernelPaths } = require('../shared/kernel-paths');
 const { showUpdaterWindow, hideUpdaterWindow, destroyUpdaterWindow } = require('./updater-window');
+const { showAboutWindow, closeAboutWindow } = require('./about-window');
 const { reconcileProfilePlugins } = require('../shared/profile-plugins-installer');
 const { readKernelPid, clearKernelPid, shouldKillOrphan } = require('../shared/orphan-kernel');
 
 const APP_ID = 'com.deepseek.desktop';
-const ISSUES_URL = 'https://github.com/EasyTZ/dsh-desktop/issues/new/choose';
+const AUTHOR = 'EasyTZ';
+const AUTHOR_URL = 'https://github.com/EasyTZ';
+const REPO_URL = 'https://github.com/EasyTZ/dsh-desktop';
+const ISSUES_URL = `${REPO_URL}/issues/new/choose`;
+// 「关于」窗口能打开的全部外链。渲染进程只能报一个键名，地址在这里查表——
+// 不给它「让主进程打开任意 URL」的口子（见 preload/about.js）。
+const ABOUT_LINKS = { repo: REPO_URL, author: AUTHOR_URL, issues: ISSUES_URL };
 const gotLock = app.requestSingleInstanceLock();
 
 if (!gotLock) {
@@ -49,7 +56,8 @@ if (!gotLock) {
   let kernelFallbackAttempted = false;
   // 安全模式：只加载插件市场（dsh-service.js 的 RECOVERY_PACKAGES），其余 profile 插件一律停用。
   // **刻意只存在内存里**：重启应用就回到正常模式，不会让用户卡在安全模式里
-  // 出不来，也不需要再造一个「怎么退出安全模式」的入口。
+  // 出不来。托盘上的「退出安全模式」因此就是 restartApp —— 没有第二份状态要清。
+  // 入口有两个：崩溃对话框的按钮（reportKernelCrash）与托盘常驻项（toggleSafeMode）。
   let safeMode = false;
 
   // 内核与插件路径：打包态走 resourcesPath，开发态走仓库根。
@@ -251,6 +259,7 @@ if (!gotLock) {
     globalShortcut.unregisterAll();
     closeSplash();
     destroyUpdaterWindow();
+    closeAboutWindow();
     if (tray) {
       tray.destroy();
       tray = null;
@@ -289,7 +298,7 @@ if (!gotLock) {
         detail: summarizeStderr(detail)
           + (offerSafeMode
             ? '\n\n如果这是插件引起的，可以选择「安全模式启动」：只加载插件市场，'
-              + '进去把可疑插件停用或卸载再正常重启。'
+              + '进去把可疑插件停用或卸载，再从托盘菜单「退出安全模式」恢复正常启动。'
             : ''),
         buttons,
         defaultId: 0,
@@ -312,21 +321,57 @@ if (!gotLock) {
    * （插件在安装目录、overlay 每次启动从清单重新生成），不留这条路用户就只能
    * 等下一个版本。
    */
-  const enterSafeMode = () => {
+  /** @param {{announce?: boolean}} [o] announce=false 时不弹说明框（托盘入口在确认框里已经说过了） */
+  const enterSafeMode = ({ announce = true } = {}) => {
     if (isQuitting) return;
     safeMode = true;
     console.warn('[app] 进入安全模式：只加载 safeMode 插件');
-    dialog.showMessageBox({
-      type: 'info',
-      title: '安全模式',
-      message: '正在以安全模式重启内核',
-      detail: '本次启动只加载插件市场，其余插件一律跳过。\n\n'
-        + '打开侧边栏的插件市场，在「已安装」里把可疑插件停用或卸载，然后重启应用'
-        + '即可恢复正常启动（安全模式只对本次运行有效，不会记住）。',
-      buttons: ['知道了'],
-      noLink: true,
-    }).catch(() => {});
+    // 托盘那一项要立刻变成「退出安全模式」，不能等内核就绪。
+    refreshDesktopMenus();
+    if (announce) {
+      dialog.showMessageBox({
+        type: 'info',
+        title: '安全模式',
+        message: '正在以安全模式重启内核',
+        detail: SAFE_MODE_EXPLANATION,
+        buttons: ['知道了'],
+        noLink: true,
+      }).catch(() => {});
+    }
     restartKernel();
+  };
+
+  /** 两个安全模式入口共用同一段说明，免得两处文案各说各话。 */
+  const SAFE_MODE_EXPLANATION = '安全模式只加载插件市场，其余插件一律跳过。\n\n'
+    + '进去后打开侧边栏的插件市场，在「已安装」里把可疑插件停用或卸载，然后从托盘菜单选'
+    + '「退出安全模式」即可恢复正常启动（安全模式只对本次运行有效，不会记住）。';
+
+  /**
+   * 托盘 / 应用菜单上那一项：不在安全模式就进，在安全模式就出。
+   *
+   * 进：先确认再动手——它会重启内核，正在看的页面会刷新一次，不该一点就发生。
+   * 出：直接 relaunch。safeMode 只在内存里，重启回来自然是正常模式，不需要
+   *     别的清理；菜单文案已经写明「重启应用」，再弹一个确认框就是重复打扰。
+   */
+  const toggleSafeMode = () => {
+    if (isQuitting) return;
+    if (safeMode) {
+      console.log('[app] 退出安全模式：重启应用');
+      return restartApp();
+    }
+    const parent = win && !win.isDestroyed() && win.isVisible() ? win : undefined;
+    const choice = dialog.showMessageBoxSync(/** @type {any} */ (parent), {
+      type: 'question',
+      title: '进入安全模式',
+      message: '要以安全模式重启内核吗？',
+      detail: SAFE_MODE_EXPLANATION,
+      buttons: ['进入安全模式', '取消'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (choice !== 0) return;
+    enterSafeMode({ announce: false });
   };
 
   /** 丢弃当前内核实例并重新拉起一个（崩溃后恢复用）。 */
@@ -516,16 +561,26 @@ if (!gotLock) {
   };
 
   const openAppUpdate = () => {
-    const url = appUpdateInfo?.url ?? `https://github.com/EasyTZ/dsh-desktop/releases`;
+    const url = appUpdateInfo?.url ?? `${REPO_URL}/releases`;
     shell.openExternal(url).catch((err) => console.error('[app] 打开更新页面失败:', err));
   };
 
-  /** 托盘菜单当前应该长什么样——内核更新完成、外壳查到新版本，两处都要重建它。 */
+  const openAbout = () => {
+    showAboutWindow({ mainWindow: win }).catch((err) => console.error('[app] 打开关于窗口失败:', err));
+  };
+
+  /**
+   * 托盘菜单当前应该长什么样——内核更新完成、外壳查到新版本、进出安全模式，
+   * 三处都要重建它。
+   */
   const trayMenuOpts = () => ({
     onShow: toggleWindow,
     onQuit: quitApp,
     onCheckUpdate: openUpdater,
     onFeedback: openFeedback,
+    onAbout: openAbout,
+    onToggleSafeMode: toggleSafeMode,
+    safeMode,
     kernelVersion: updater ? updater.getCurrentVersion() : null,
     appUpdate: appUpdateInfo,
     onOpenAppUpdate: openAppUpdate,
@@ -612,6 +667,31 @@ if (!gotLock) {
   ipcMain.handle('kernel-update:check', () => (updater ? updater.check() : { phase: 'idle', currentVersion: null, latestVersion: null, error: null }));
   // 跟托盘「检查内核更新」菜单项完全同一个函数：弹更新中心窗口 + 立即查一遍。
   ipcMain.on('kernel:check-update', openUpdater);
+  // 「更新」分区在两个按钮上方各自标一行当前版本号。跟托盘菜单
+  // `checkUpdateLabel(kernelVersion)` 读的是同一个 updater.getCurrentVersion()——
+  // 内核更新完成但还没重启时，这里显示的仍是「重启前」的版本，跟托盘一致。
+  ipcMain.handle('app:get-version', () => app.getVersion());
+  ipcMain.handle('kernel:get-version', () => (updater ? updater.getCurrentVersion() : null));
+
+  // 「关于」窗口。内核版本跟托盘 / 设置面板读的是同一个 updater.getCurrentVersion()，
+  // 三处永远一致。isPackaged 让页面区分「开发态本来就读不到」和「打包态读不到
+  // 说明内核目录有问题」两种空值。
+  ipcMain.handle('about:get-info', () => ({
+    appVersion: app.getVersion(),
+    kernelVersion: updater ? updater.getCurrentVersion() : null,
+    isPackaged: app.isPackaged,
+    author: AUTHOR,
+    repoUrl: REPO_URL,
+    repoLabel: REPO_URL.replace(/^https?:\/\/github\.com\//, ''),
+    license: 'MIT',
+    safeMode,
+  }));
+  ipcMain.on('about:open', (_e, target) => {
+    const url = Object.prototype.hasOwnProperty.call(ABOUT_LINKS, target) ? ABOUT_LINKS[target] : null;
+    if (!url) return;
+    shell.openExternal(url).catch((err) => console.error('[app] 打开链接失败:', err));
+  });
+  ipcMain.on('about:close', () => closeAboutWindow());
 
   app.on('second-instance', () => {
     if (win && !win.isDestroyed()) showWindow();
@@ -694,6 +774,7 @@ if (!gotLock) {
     notifications.stop();
     closeSplash();
     destroyUpdaterWindow();
+    closeAboutWindow();
   });
 
   app.on('will-quit', (event) => {

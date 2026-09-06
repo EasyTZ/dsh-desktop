@@ -77,12 +77,21 @@ test('planProfileReconcile: required 插件版本一致就什么都不做（常�
   assert.deepStrictEqual(planProfileReconcile(desired, () => '0.1.0'), []);
 });
 
-test('planProfileReconcile: required 插件被卸了要装回来，版本漂了也要拉回来', () => {
+test('planProfileReconcile: required 插件被卸了、或者版本落后了都要拉回来', () => {
   // 插件市场是唯一的 required：它没了就没有任何管理插件的界面，所以不接受「用户
-  // 不想要」这种状态。降级也要执行——应用回退时插件要跟着回到配套版本。
+  // 不想要」这种状态。
   const desired = [{ packageName: 'dsh-market', version: '0.1.0', tarball: 't.tgz', required: true }];
   assert.deepStrictEqual(planProfileReconcile(desired, () => null, { 'dsh-market': '0.1.0' }), desired);
-  assert.deepStrictEqual(planProfileReconcile(desired, () => '0.9.9', { 'dsh-market': '0.9.9' }), desired);
+  assert.deepStrictEqual(planProfileReconcile(desired, () => '0.0.9', { 'dsh-market': '0.0.9' }), desired);
+});
+
+test('planProfileReconcile: required 插件不降级——市场自己更新到更新版本，不会被拉回随包版本', () => {
+  // 真实故障：市场自己就是「一键更新」按钮的来源，用户在应用内把市场更新到比
+  // 随包版本更新的版本后重启，这条对账逻辑曾经会把它拉回随包版本——表现是
+  // 「点了更新、重启后又变回旧版，且『有更新』提示还在」。跟非 required 那条
+  // 「只升级不降级」（见下面「播种过且还装着时」）是同一个判据，市场不该破例。
+  const desired = [{ packageName: 'dsh-market', version: '0.1.0', tarball: 't.tgz', required: true }];
+  assert.deepStrictEqual(planProfileReconcile(desired, () => '0.9.9', { 'dsh-market': '0.9.9' }), []);
 });
 
 test('planProfileReconcile: 非 required 同版卸载后不重装，随包升级时重新播种默认插件', () => {
@@ -110,23 +119,23 @@ test('planProfileReconcile: 播种过且还装着时，只升级不降级', () =
 });
 
 test('planProfileReconcile: 联调链接一律不碰——required 的市场也不例外', () => {
-  // 真实事故：市场源码是 1.2.2、随包 tarball 是 1.2.1，联调 junction 铺好之后对账
-  // 读到的「实际版本」是工作副本那个 1.2.2，required 的「不等就装」当场命中，pnpm
-  // 把 junction 换成 tarball 解出来的实体目录。表现是「改完代码怎么都不生效」，
-  // 而日志里只有一句跟市场无关的 pnpm ENOENT。发行版里没有 junction，这条分支
-  // 永远不会命中，所以它不削弱 required 的自愈语义。
+  // 真实事故（改「不降级」之前）：市场源码版本落后于随包 tarball 时，联调 junction
+  // 铺好之后对账读到的「实际版本」是工作副本那个落后的号，required 的「落后就装」
+  // 当场命中，pnpm 把 junction 换成 tarball 解出来的实体目录。表现是「改完代码
+  // 怎么都不生效」，而日志里只有一句跟市场无关的 pnpm ENOENT。发行版里没有
+  // junction，这个分支永远不会命中，所以它不削弱 required 的自愈语义。
   const desired = [
     { packageName: 'dsh-market', version: '1.2.1', tarball: 't.tgz', required: true },
     { packageName: 'dsh-git', version: '0.5.0', tarball: 'g.tgz' },
   ];
   const linked = (name) => name === 'dsh-market';
   assert.deepStrictEqual(
-    planProfileReconcile(desired, () => '1.2.2', {}, linked),
+    planProfileReconcile(desired, () => '1.2.0', {}, linked),
     [desired[1]],
     '联调的市场要跳过，没联调的 dsh-git 照常播种',
   );
   // 缺省参数不能改变原有行为：不传 isLinked 时还是老样子。
-  assert.deepStrictEqual(planProfileReconcile(desired, () => '1.2.2', {}), desired);
+  assert.deepStrictEqual(planProfileReconcile(desired, () => '1.2.0', {}), desired);
 });
 
 test('isLinkedIn: 认得出联调链接，实体目录和不存在都是 false', () => {
@@ -270,7 +279,10 @@ test('saveSeedState: 目录不存在时自动建（首次启动 userData 里还�
 
 test('真实清单：五个插件都在 A1，且只有插件市场是 required', () => {
   // 这条钉的是本次迁移的结论：四个插件与市场装的插件同一种管理模式（可自主装卸），
-  // 唯独市场自己必须常驻——它没了就没有任何能装卸插件的界面。
+  // 唯独市场自己必须常驻——它没了就没有任何能装卸插件的界面。「卸载」市场在
+  // dsDesktop 里走的是另一条路（假卸载：写停用标记，见 dsh-service.js 的
+  // exclude 只在安全模式下才放行市场），不经过这份随包清单的对账，required
+  // 在这里管的仍然是「随包分发层面绝不能真的消失」这件事。
   const plugins = loadProfilePluginManifest(path.join(__dirname, '..', 'plugins'));
   const names = plugins.map((p) => p.packageName).sort();
   assert.deepStrictEqual(names, [

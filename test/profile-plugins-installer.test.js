@@ -350,3 +350,31 @@ test('reconcileProfilePlugins: 装的必须是镜像里那份，不是应用目�
   const mirror = path.join(home, '.dsdesktop', 'bundled');
   assert.deepStrictEqual(seen, [path.join(mirror, 'a-1.0.0.tgz')]);
 });
+
+test('reconcileProfilePlugins: 卸载了市场（required），走完整条链路也会把它装回来', async () => {
+  // 端到端地把「用户卸载市场 → 重启 app」走一遍——不只测 planProfileReconcile
+  // 这个纯函数，还要确认它的输出真的被送进了 runAdd，用的是随包镜像里那份
+  // tarball。这条链路是「卸载市场也能自愈」这句承诺的完整证据链，不能只信
+  // 纯函数那一半。
+  const home = tmpdir();
+  const dist = writeDist(tmpdir(), [
+    { packageName: '@easytz/dsh-market', version: '1.6.1', tarball: 'market-1.6.1.tgz', required: true },
+  ]);
+  // 卸载之后的真实状态：profile 清单里这条依赖整个不见了，node_modules 里也没有。
+  writeManifest(path.join(home, 'profiles', 'web'), { dependencies: {}, dsh: { profile: { bundles: [] } } });
+
+  let seen = null;
+  await reconcileProfilePlugins({
+    profileDistDir: dist,
+    nodeExe: 'node', binJs: 'bin.js', pnpmCliPath: 'pnpm.cjs',
+    shimDir: path.join(home, 'shim'),
+    seedStatePath: path.join(home, 'seeded.json'),
+    logger: quiet,
+    env: { DSH_HOME: home },
+    runAdd: async ({ specs }) => { seen = specs; return { ok: true, output: '' }; },
+  });
+
+  const mirror = path.join(home, '.dsdesktop', 'bundled');
+  assert.deepStrictEqual(seen, [path.join(mirror, 'market-1.6.1.tgz')],
+    '卸载后重启应该自动把市场重新装回随包版本');
+});

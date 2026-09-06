@@ -124,4 +124,4 @@ function destroyUpdaterWindow() {
   win = null;
 }
 
-module.exports = { createUpdaterWindow, showUpdaterWindow, hideUpdaterWindow, destroyUpdaterWindow };
+module.exports = { createUpdaterWindow, showUpdaterWindow, hideUpdaterWindow, destroyUpdaterWindow, detectTheme };

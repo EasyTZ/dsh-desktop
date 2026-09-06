@@ -215,4 +215,7 @@ contextBridge.exposeInMainWorld('desktop', {
   checkKernelUpdate: () => ipcRenderer.invoke('kernel-update:check'),
   // 跟托盘「检查内核更新」菜单项走的是同一个处理函数（openUpdater）。
   openKernelUpdater: () => ipcRenderer.send('kernel:check-update'),
+  // 「更新」分区两个按钮上方各自标一行当前版本号，纯展示，不带任何检查逻辑。
+  getAppVersion: () => ipcRenderer.invoke('app:get-version'),
+  getKernelVersion: () => ipcRenderer.invoke('kernel:get-version'),
 });

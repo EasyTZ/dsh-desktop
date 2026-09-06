@@ -19,6 +19,13 @@ const { withPnpmOnPath, profileDir } = require('../shared/profile-plugins-instal
  *
  * 目前只有插件市场：它是唯一能关插件的界面。
  * 安全模式的意义是「把出问题的插件关掉」，把那个能关插件的东西也关了就等于没有安全模式。
+ *
+ * **只在安全模式下才排除**——市场的「卸载」按钮现在走的是假卸载（见
+ * dsh-market/lib/index.js 的 SELF_PACKAGE_NAME 分支）：点了不是真的从磁盘删掉，
+ * 是把自己的 entry id 写进跟别的插件共用的那份停用状态，靠这份排除名单只在
+ * 正常模式下**不**生效，市场才能被这条「假卸载」真正关掉。安全模式恢复排除，
+ * 保证不管用户有没有假卸载过市场，逃生舱里永远能看到它、用它把出问题的插件
+ * 关掉或卸载——这也是用户重新启用市场自己的唯一入口，见该文件里的注释。
  */
 const RECOVERY_PACKAGES = ['@easytz/dsh-market'];
 
@@ -290,6 +297,10 @@ class DshService extends EventEmitter {
    *
    * 安全模式**不读用户状态**：那正是「用户状态可能有问题」时用的逃生舱，再过一遍
    * 开关只可能把恢复入口也滤掉。它关掉市场以外的全部 profile 插件。
+   *
+   * `exclude` 只在安全模式下才传：正常模式不排除市场，让它能被自己的「假卸载」
+   * 真正停用（见 RECOVERY_PACKAGES 顶部注释）；安全模式下换回排除名单，不管
+   * 市场当前是不是被假卸载了，都强制算作「不停用」，保证逃生舱里市场永远在。
    * @returns {string|null}
    */
   #prepareActivationPatch() {
@@ -297,7 +308,8 @@ class DshService extends EventEmitter {
     try {
       const patch = prepareActivationPatch({
         patchPath: this.activationPatchPath, statePath: this.pluginStatePath,
-        profileDir: profileDir(), safeMode: this.safeMode, exclude: RECOVERY_PACKAGES,
+        profileDir: profileDir(), safeMode: this.safeMode,
+        exclude: this.safeMode ? RECOVERY_PACKAGES : [],
       });
       if (this.safeMode) this.logger.log('[dsh] 安全模式：已停用市场以外的全部 profile 插件');
       return patch;

@@ -13,12 +13,37 @@ function checkUpdateLabel(kernelVersion) {
 }
 
 /**
- * 构造托盘菜单。单独导出是为了内核更新完成后能重建菜单、刷新版本号。
- * @param {{onShow: () => void, onQuit: () => void, onCheckUpdate: () => void, onFeedback: () => void,
- *          kernelVersion?: string|null, appUpdate?: {version: string, url: string|null}|null,
- *          onOpenAppUpdate?: () => void}} opts
+ * 安全模式那一项的标签：同一个位置、按当前状态切换文案。
+ *
+ * 退出那一侧要把「重启应用」写在脸上：安全模式只存在于内存里（见 index.js 的
+ * `safeMode`），退出的实现就是 relaunch，用户点之前应该知道窗口会消失一下再回来。
+ * @param {boolean|undefined} safeMode
  */
-function buildTrayMenu({ onShow, onQuit, onCheckUpdate, onFeedback, kernelVersion, appUpdate, onOpenAppUpdate }) {
+function safeModeLabel(safeMode) {
+  return safeMode ? '退出安全模式（重启应用）' : '进入安全模式';
+}
+
+/**
+ * @typedef {object} MenuOpts
+ * @property {() => void} onShow
+ * @property {() => void} onQuit
+ * @property {() => void} onCheckUpdate
+ * @property {() => void} onFeedback
+ * @property {() => void} [onAbout]
+ * @property {() => void} [onToggleSafeMode]
+ * @property {boolean} [safeMode]
+ * @property {string|null} [kernelVersion]
+ * @property {{version: string, url: string|null}|null} [appUpdate]
+ * @property {() => void} [onOpenAppUpdate]
+ */
+
+/**
+ * 构造托盘菜单。单独导出是为了内核更新完成后能重建菜单、刷新版本号；进出安全模式
+ * 时也要重建，让那一项的文案跟着状态变。
+ * @param {MenuOpts} opts
+ */
+function buildTrayMenu({ onShow, onQuit, onCheckUpdate, onFeedback, onAbout, onToggleSafeMode, safeMode,
+  kernelVersion, appUpdate, onOpenAppUpdate }) {
   /** @type {import('electron').MenuItemConstructorOptions[]} */
   const items = [
     { label: '显示 / 隐藏', click: onShow },
@@ -31,8 +56,15 @@ function buildTrayMenu({ onShow, onQuit, onCheckUpdate, onFeedback, kernelVersio
     items.push({ label: `有新版本 v${appUpdate.version}，点击查看`, click: onOpenAppUpdate });
     items.push({ type: 'separator' });
   }
+  items.push({ label: checkUpdateLabel(kernelVersion), click: onCheckUpdate });
+  // 安全模式常驻一项：以前只能从崩溃对话框进，但「插件装完界面卡死 / 白屏但内核
+  // 没退」这类故障不会触发崩溃对话框，用户没有任何入口能把插件关掉。
+  if (onToggleSafeMode) {
+    items.push({ label: safeModeLabel(safeMode), click: onToggleSafeMode });
+  }
+  items.push({ type: 'separator' });
+  if (onAbout) items.push({ label: '关于', click: onAbout });
   items.push(
-    { label: checkUpdateLabel(kernelVersion), click: onCheckUpdate },
     { label: '反馈问题', click: onFeedback },
     { type: 'separator' },
     { label: '退出', click: onQuit },
@@ -46,6 +78,7 @@ function buildTrayMenu({ onShow, onQuit, onCheckUpdate, onFeedback, kernelVersio
  * 菜单栏项目过多（尤其带刘海的屏幕）时，macOS 会把一部分状态项挤掉；那不是
  * Tray 创建失败，但用户同样点不到唯一的更新入口。顶部应用菜单与 Dock 右键菜单
  * 都是系统原生、不会依赖状态项是否可见，且复用同一组回调，不再造第二套行为。
+ * @param {MenuOpts} opts
  */
 function installMacApplicationMenu(opts) {
   if (process.platform !== 'darwin') return;
@@ -56,15 +89,26 @@ function installMacApplicationMenu(opts) {
   ] : [];
   /** @type {import('electron').MenuItemConstructorOptions} */
   const updateItem = { label: checkUpdateLabel(opts.kernelVersion), click: opts.onCheckUpdate };
+  /** @type {import('electron').MenuItemConstructorOptions[]} */
+  const safeModeItems = opts.onToggleSafeMode
+    ? [{ label: safeModeLabel(opts.safeMode), click: opts.onToggleSafeMode }]
+    : [];
+  // 「关于」用我们自己的窗口而不是系统 `role: 'about'`：系统那个只会显示版本号和
+  // 版权，内核版本、仓库地址都放不进去，而且长得跟更新中心完全不是一套。
+  /** @type {import('electron').MenuItemConstructorOptions} */
+  const aboutItem = opts.onAbout
+    ? { label: `关于 ${app.name}`, click: opts.onAbout }
+    : { role: 'about' };
 
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     {
       label: app.name,
       submenu: [
-        { role: 'about' },
+        aboutItem,
         { type: 'separator' },
         ...appUpdateItems,
         updateItem,
+        ...safeModeItems,
         { label: '反馈问题', click: opts.onFeedback },
         { type: 'separator' },
         { role: 'hide' },
@@ -93,14 +137,16 @@ function installMacApplicationMenu(opts) {
       { label: '显示 / 隐藏', click: opts.onShow },
       { type: 'separator' },
       updateItem,
+      ...safeModeItems,
       ...appUpdateItems,
+      ...(opts.onAbout ? [{ label: '关于', click: opts.onAbout }] : []),
       { label: '反馈问题', click: opts.onFeedback },
     ]));
   }
 }
 
 /**
- * @param {{onShow: () => void, onQuit: () => void, onCheckUpdate: () => void, onFeedback: () => void, kernelVersion?: string|null}} opts
+ * @param {MenuOpts} opts
  * @returns {import('electron').Tray|null} 失败（多半是 Linux 缺 libappindicator）时返回 null
  */
 function createTray(opts) {
@@ -133,4 +179,4 @@ function createTray(opts) {
   }
 }
 
-module.exports = { createTray, buildTrayMenu, checkUpdateLabel, installMacApplicationMenu };
+module.exports = { createTray, buildTrayMenu, checkUpdateLabel, safeModeLabel, installMacApplicationMenu };
