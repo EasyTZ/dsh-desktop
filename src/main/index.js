@@ -693,6 +693,16 @@ if (!gotLock) {
   });
   ipcMain.on('about:close', () => closeAboutWindow());
 
+  // 同一类自愈，抓的是渲染进程没死、只是 GPU 子进程被驱动拖崩的那种黑屏
+  // （见 window.js 里 render-process-gone 的注释）。GPU 进程崩了 Chromium 会
+  // 自动重启一个新的，但已经提交失败的那一帧不会自己补画，页面就会停在黑屏——
+  // reload 一下让渲染进程重新走一遍首帧提交。
+  app.on('child-process-gone', (_event, details) => {
+    if (details.type !== 'GPU') return;
+    console.warn('[app] GPU 子进程异常退出，自动重新加载主窗口:', details.reason);
+    if (win && !win.isDestroyed()) win.webContents.reload();
+  });
+
   app.on('second-instance', () => {
     if (win && !win.isDestroyed()) showWindow();
     else if (splash && !splash.isDestroyed()) splash.focus();

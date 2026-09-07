@@ -76,6 +76,17 @@ function createMainWindow(url, { onCloseRequest, onFocusChanged } = {}) {
   win.loadURL(url);
   win.once('ready-to-show', () => win.show());
 
+  // 自愈：渲染进程被 GPU/显卡驱动拖垮而异常退出时（典型场景是开机瞬间独显/核显
+  // 切换还没稳定，见 2026-09-07 排查记录），Chromium 不会自己重新发起渲染，
+  // 表现为窗口打开但一片黑、没有任何报错。这里不用重弹崩溃框或重启内核（内核
+  // 本身没事），reload 一次通常就够——这时驱动栈大概率已经稳定，等价于用户
+  // 手动退出重开那一步。
+  win.webContents.on('render-process-gone', (_event, details) => {
+    if (win.isDestroyed()) return;
+    console.warn('[window] 渲染进程异常退出，自动重新加载:', details.reason);
+    win.webContents.reload();
+  });
+
   // 推送最大化状态给渲染进程，用于切换「最大化 / 还原」按钮图标。
   const sendMaxState = () => {
     if (!win.isDestroyed()) win.webContents.send('window:maximized-changed', win.isMaximized());
