@@ -68,7 +68,7 @@
 
 ### 系统通知（`notifications.js`）
 
-内核的 `/api/events.mux` **只有 WebSocket 下行，普通 HTTP GET 返回 426，没有 SSE 回退**。下行每帧是 `server-request` 信封，真正的 mux 帧在 `payload` 里。只在窗口失焦时弹通知，并同时闪烁任务栏。
+内核 0.1.2-rc.1 的 `/api/events.mux` 已由 `/api/remote.mux` 取代。它不是一上来就发下行帧：连上后要先用 `{ type: 'open', streamId, endpoint: '$events', payload: { args: {} } }` 打开一路转发事件流，之后收到的 `{ type: 'item', streamId, value }` 里 `value` 才是事件帧。`/api` 全部要求签名 cookie；Electron 主进程的 Node/undici WebSocket 没有 cookie jar，所以 `notifications.js` 先拿地址行 token 请求 `/` 换 cookie，再显式放进 WebSocket 握手头。开发态仍可能用 0.1.1-rc.2 及更早的全局 dsh——那种地址行没有 token，`notifications.js` 会回退到旧 `/api/events.mux`，避免把 HTTP 200 当成鉴权失败反复重连。只在窗口失焦时弹通知，并同时闪烁任务栏。
 
 Windows toast 还要求存在指向本应用、且 AppUserModelID 与 `app.setAppUserModelId` 一致的开始菜单快捷方式；安装版由 NSIS 建，绿色版/win-unpacked 由 `ensureStartMenuShortcut()` 首启补建（已存在则跳过，别改成每次重写——那是启动路径上的冗余磁盘写）。
 
