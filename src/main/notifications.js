@@ -183,7 +183,11 @@ class TaskNotifications {
 
     let socket;
     try {
-      socket = new WebSocket(url, { headers: { Cookie: cookie } });
+      // 第二个参数在 W3C 那份 WebSocket 里是 protocols，只有 undici（主进程实际
+      // 用的那个实现）额外认 `{ headers }`。tsconfig 的 lib 带了 DOM，checkJs 查到
+      // 的是浏览器那份签名，于是把这个对象当成 protocols 报错——运行时没问题，是
+      // 两份同名 API 的差异，所以断言一下。Cookie 为什么必须显式带，见类顶部注释。
+      socket = new WebSocket(url, /** @type {any} */ ({ headers: { Cookie: cookie } }));
     } catch {
       this.#scheduleReconnect();
       return;
