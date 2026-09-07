@@ -5,7 +5,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { AppUpdateChecker, AUTO_CHECK_INTERVAL_MS } = require('../src/main/app-updater');
+const { AppUpdateChecker, AUTO_CHECK_INTERVAL_MS, pickLatestTag } = require('../src/main/app-updater');
 
 // check() 决定用户会不会看到「有新版本」的提醒。判断错了要么永远提醒不出更新，
 // 要么在版本相同/更旧时谎报有更新——后者会让用户对着「已经是最新版」的应用去点
@@ -99,6 +99,65 @@ test('过期的 lastCheck 会重新触发检查', async () => {
   const f = makeFixture();
   fs.writeFileSync(f.configPath, JSON.stringify({ lastCheck: Date.now() - AUTO_CHECK_INTERVAL_MS - 1000 }));
   const { u } = makeChecker(f, '1.5.1', { version: '1.6.0', url: null });
+  assert.strictEqual(u.shouldAutoCheck(), true);
+  cleanup(f);
+});
+
+// pickLatestTag 是 GitHub 查不通时的兜底入口（读 Gitee 镜像的 tag 列表）。挑错了
+// 会把补发的旧版本当成最新版，反过来劝用户「升级」回去——比查不到更糟。
+
+test('从 Gitee tag 列表里挑出版本号最大的那个', () => {
+  // 故意乱序，并且把最旧的一个放在最后：模拟事后补打的 tag。这个接口按创建
+  // 时间给，不按版本排序，「取第一个」在这份数据上就会答错。
+  const tags = [
+    { name: 'v1.6.0' },
+    { name: 'v1.7.9' },
+    { name: 'v1.7.10' },
+    { name: 'v1.5.2' },
+  ];
+  assert.strictEqual(pickLatestTag(tags), '1.7.10', '1.7.10 比 1.7.9 新，不能按字符串比');
+});
+
+test('不带 v 前缀的 tag 也认', () => {
+  assert.strictEqual(pickLatestTag([{ name: '1.2.3' }]), '1.2.3');
+});
+
+test('忽略认不出版本号的 tag，不因为混进一个就整体失败', () => {
+  assert.strictEqual(pickLatestTag([{ name: 'nightly' }, { name: 'v1.0.0' }, {}]), '1.0.0');
+});
+
+test('没有任何可用 tag 时返回 null，由调用方转成一次失败', () => {
+  assert.strictEqual(pickLatestTag([]), null);
+  assert.strictEqual(pickLatestTag([{ name: 'latest' }]), null);
+  assert.strictEqual(pickLatestTag(null), null, 'Gitee 返回的不是数组时不能崩');
+});
+
+test('GitHub 断了会退到 Gitee，拿到版本号照样能提醒', async () => {
+  const f = makeFixture();
+  const u = new AppUpdateChecker({ logger: silent, currentVersion: '1.5.1', configPath: f.configPath });
+  const notifyCalls = [];
+  u._fetchFromGitHub = async () => { throw new Error('ETIMEDOUT'); };
+  u._fetchFromGitee = async () => ({ version: '1.6.0', url: 'https://gitee.com/huo_sydney/dsh-desktop' });
+  u._notify = (version, releaseUrl) => { notifyCalls.push({ version, releaseUrl }); };
+
+  const s = await u.check();
+  assert.strictEqual(s.phase, 'available');
+  assert.strictEqual(s.latestVersion, '1.6.0');
+  assert.strictEqual(s.releaseUrl, 'https://gitee.com/huo_sydney/dsh-desktop', '兜底时要给能打开的那个链接');
+  assert.strictEqual(notifyCalls.length, 1);
+  cleanup(f);
+});
+
+test('两条路都断才算失败', async () => {
+  const f = makeFixture();
+  const u = new AppUpdateChecker({ logger: silent, currentVersion: '1.5.1', configPath: f.configPath });
+  u._fetchFromGitHub = async () => { throw new Error('ETIMEDOUT'); };
+  u._fetchFromGitee = async () => { throw new Error('ECONNRESET'); };
+  u._notify = () => {};
+
+  const s = await u.check();
+  assert.strictEqual(s.phase, 'error');
+  assert.strictEqual(s.error, 'ECONNRESET', '错误信息应是最后一条路的，不是第一条的');
   assert.strictEqual(u.shouldAutoCheck(), true);
   cleanup(f);
 });

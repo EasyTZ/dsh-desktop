@@ -34,6 +34,26 @@
 | **Linux** x64 | `...-x.x.x.AppImage` | `chmod +x` 之后双击或命令行运行，不用安装 |
 | **macOS** Apple Silicon | `...-x.x.x.dmg` | 打开后按图示拖进「应用程序」；首次启动按 DMG 内的安全放行步骤操作 |
 
+### 🇨🇳 国内打不开 GitHub？
+
+源码在两个平台各有一份，**Gitee 那份是自动同步的镜像**，你 push 到 GitHub 之后它自己跟上：
+
+| 平台 | 地址 | 有什么 |
+|---|---|---|
+| GitHub | [github.com/EasyTZ/dsh-desktop](https://github.com/EasyTZ/dsh-desktop) | 源码 + **安装包**（Releases） |
+| Gitee | [gitee.com/huo_sydney/dsh-desktop](https://gitee.com/huo_sydney/dsh-desktop) | 源码（只读镜像），问题与 PR 请到 GitHub 提 |
+
+安装包只有 GitHub 一份：每份 160MB 以上，超了 Gitee 免费仓库单个附件 100MB 的上限，搬不过去。
+所以**每个 Release 的说明正文里都附了一组代理下载链接**，往下翻到「🇨🇳 国内下载加速」那一节，文件跟 Assets 里的完全相同。
+
+连 Release 页面本身都打不开的话，把代理前缀拼在完整原始地址前面就是下载地址，版本号换成最新的即可：
+
+```
+https://gh-proxy.com/https://github.com/EasyTZ/dsh-desktop/releases/download/v1.7.9/DeepSeek-Harness-Desktop-Setup-1.7.9.exe
+```
+
+代理由第三方运营，会挂也会限速；换个前缀（如 `https://ghfast.top/`）拼在同样的原始地址前通常也能下。
+
 <details>
 <summary><b>各平台的首次启动提示（点开看）</b></summary>
 

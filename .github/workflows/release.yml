@@ -265,6 +265,30 @@ jobs:
             echo ""
             echo "> 本次构建实际打进包的内核：dsh ${{ needs.build-windows.outputs.kernel-version }}（三平台一致）"
           } >> /tmp/release-notes.md
+
+          # 国内朋友直连 github.com 经常打不开，产物却只能放在 GitHub Release：
+          # Gitee 免费个人版单个附件上限 100MB、单仓库附件总量 1G，而这里每份
+          # 产物都在 160MB 以上、三平台加起来接近 1G —— 镜像到 Gitee 这条路是
+          # 被配额堵死的，不是配置问题。所以产物仍然只有 GitHub 这一份，额外补
+          # 一组加速代理链接：前缀直接拼在**完整原始地址**前面，跟 dsh-market
+          # 插件里那套 GitHub 镜像写法一致。
+          #
+          # 代理站由第三方运营，会挂也会限速，因此原始链接照旧摆在上方 Assets
+          # 区 —— 这一节是备用路径，不是替代品。文件名由 collect-release.mjs
+          # 统一规整过，不含空格，可以直接拼进 URL。
+          {
+            echo ""
+            echo "### 🇨🇳 国内下载加速"
+            echo ""
+            echo "上方 Assets 打不开的话，用下面这组代理链接，文件内容完全相同："
+            echo ""
+            for f in release/*; do
+              name=$(basename "$f")
+              echo "- [$name](https://gh-proxy.com/https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${name})"
+            done
+            echo ""
+            echo "代理不保证长期可用，换个前缀（如 \`https://ghfast.top/\` 拼在同样的原始地址前）通常也能下。"
+          } >> /tmp/release-notes.md
           echo "::group::发布说明预览"
           cat /tmp/release-notes.md
           echo "::endgroup::"
