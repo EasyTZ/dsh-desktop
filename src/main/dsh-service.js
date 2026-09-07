@@ -5,7 +5,7 @@ const { EventEmitter } = require('node:events');
 const http = require('node:http');
 const path = require('node:path');
 const { app } = require('electron');
-const { URL_LINE_RE, URL_LINE_TIMEOUT_MS } = require('../shared/kernel-boot');
+const { URL_LINE_RE, URL_LINE_TIMEOUT_MS, probeUrl } = require('../shared/kernel-boot');
 const { resolvePackagedKernel } = require('../shared/kernel-paths');
 const { findFreePort } = require('../shared/net');
 const { findDshBinJsAsync } = require('../shared/dsh-locate');
@@ -37,6 +37,11 @@ const MAX_BIND_RETRIES = 3;
 // dsh 是「先绑端口、后加载插件树」，两者之间存在一个「HTTP 已通但内核仍会
 // 崩溃」的窗口期；不等这一会儿就会把正在崩溃的内核当成就绪。
 const READY_SETTLE_MS = 700;
+
+// HTTP 探活的预算，**从拿到地址行那一刻开始算**（不是从进程启动算）。
+// 两段分开计时的理由见 #pollReady：冷启动光等地址行就可能花掉几十秒，共用一个
+// 预算等于「等得越久、留给探活的时间越少」，正好在最需要耐心的时候最没耐心。
+const READY_TIMEOUT_MS = 60000;
 
 /**
  * 给内核**整棵进程树**发信号（仅非 win32）。
@@ -134,8 +139,13 @@ class DshService extends EventEmitter {
   /**
    * 等不到内核打印 URL 行：杀掉它，换回「自己探一个端口」的老做法重来一次。
    *
-   * 只可能在上游改掉那行输出格式时发生。宁可退回有交接窗口的老路，也不能让用户
-   * 对着一个「进程活着但永远不就绪」的闪屏干等 —— 那是最难自查的一种卡死。
+   * 只可能在上游改掉那行输出格式、或内核卡死在打印之前时发生。宁可退回有交接窗口
+   * 的老路，也不能让用户对着一个「进程活着但永远不就绪」的闪屏干等。
+   *
+   * **注意这条路救不了「格式变了」那种情况**：端口是我们自己定的没错，但登录 token
+   * 仍然只能从那行里读，读不到就进不去。所以重来一轮之后地址依旧等地址行（见
+   * #launch 里 `this.url = null` 那段），再等不到就由 #pollReady 报错收场——那比
+   * 「拿一个进不去的裸地址把窗口打开」诚实得多。
    */
   #fallbackToExplicitPort() {
     if (this.#explicitPortFallback) return; // 老路也没起来，交给就绪超时报错
@@ -186,7 +196,11 @@ class DshService extends EventEmitter {
     // #explicitPortFallback 是退路：万一哪天上游改了那行的格式，我们就拿不到端口，
     // 只能退回「自己探一个端口交给内核」的老做法（#fallbackToExplicitPort 触发）。
     const port = this.#explicitPortFallback ? await findFreePort() : 0;
-    this.url = port ? `http://127.0.0.1:${port}` : null;
+    // **端口是谁定的都一样，地址一律等内核打印的地址行。** 那行里带着登录 token，
+    // 而不带 token 的裸地址在内核那边永远是 401（换不到会话 cookie）——退回自选
+    // 端口时这里原本会先填一个裸地址好让探活立刻开始，结果就是主窗口也拿着这个
+    // 进不去的地址加载，窗口打开却一直停在登录前，没有任何报错。
+    this.url = null;
     const args = [binJs, 'web'];
 
     // 插件激活：走 dsh 官方的 `--patch` overlay，不再改发行包自带的 bundle patch。
@@ -335,38 +349,58 @@ class DshService extends EventEmitter {
   }
 
   /**
-   * 轮询内核 HTTP 端口直到就绪。注意 dsh 是「先绑端口、后加载 plugin tree」，
-   * 所以端口能应答并不等于内核启动完成：插件加载阶段崩溃时 HTTP 早已经通了。
-   * 因此这里要求响应码 < 500，并在宣告就绪前再观察 READY_SETTLE_MS 确认进程
-   * 仍然存活 —— 否则一个正在崩溃的内核会被当成就绪，后续崩溃被 ready 吞掉，
-   * 表现为「窗口打开了但是一片黑、也没有任何报错」。
+   * 等内核真正可用。分两段，**各自计时**：
+   *
+   * 1. 等地址行。地址由内核打印（`--port 0` 时端口也只能从这行读回来），而且那行
+   *    里带着登录 token —— 没有 token 就算端口通了也进不去（内核一律 401）。
+   * 2. 等 HTTP 应答。dsh 是「先绑端口、后加载 plugin tree」，端口能应答不等于启动
+   *    完成，插件加载阶段崩溃时 HTTP 早已经通了；所以还要再观察 READY_SETTLE_MS
+   *    确认进程没随后崩掉，否则正在崩溃的内核会被当成就绪、后续崩溃被 ready 吞掉。
+   *
+   * 两段分开计时，是因为共用一个预算会「等地址行等得越久，留给探活的时间越少」——
+   * 冷启动正是地址行最慢的时候，也正是最不该失去耐心的时候（实测这行要 20s+，
+   * 而原先两段共用 30s，剩下不到 10s 给探活，直接把能起来的内核判成失败）。
    */
   #pollReady() {
-    const deadline = Date.now() + 30000;
-    // URL 行一直不来的兜底期限（见 #launch：--port 0 时端口只能从这行拿到）。
     const urlDeadline = Date.now() + URL_LINE_TIMEOUT_MS;
+    /** 探活预算，拿到地址行才开始算。 @type {number|null} */
+    let readyDeadline = null;
     const attempt = () => {
       if (this.stopped || this.ready) return;
       // 子进程已经退出：不可能再就绪，交给 exit 处理器报错，别空等到超时。
       if (!this.child) return;
-      // --port 0 时端口由内核自己选，要等它把 URL 行打出来才知道打哪儿。
       const url = this.url;
       if (!url) {
-        if (Date.now() > urlDeadline) {
+        if (Date.now() <= urlDeadline) {
+          setTimeout(attempt, 250);
+          return;
+        }
+        // 还没退回过自选端口：退一次（那边会重起一轮，含新的 #pollReady）。
+        if (!this.#explicitPortFallback) {
           this.#fallbackToExplicitPort();
           return;
         }
-        this.#schedule(deadline, attempt);
+        // 退回过还是等不到地址行 = 拿不到 token = 这个内核进不去。直接报错，
+        // 别让用户对着闪屏无限等 —— 这条路径上原先是**静默停止轮询**。
+        this.emit('error', new Error(
+          `dsh 内核在 ${(URL_LINE_TIMEOUT_MS / 1000).toFixed(0)}s 内没有打印地址行，取不到登录 token`
+        ));
         return;
       }
-      const req = http.get(url + '/', (res) => {
+      if (readyDeadline === null) readyDeadline = Date.now() + READY_TIMEOUT_MS;
+      const deadline = readyDeadline;
+      const req = http.get(probeUrl(url), (res) => {
         res.resume();
-        // 5xx 说明内核还没准备好（或已经坏了），继续等。
-        if (!res.statusCode || res.statusCode >= 500) {
+        // 5xx = 内核还没准备好（或已经坏了）。401 = 地址里的 token 没被认下来，
+        // 同样**不算就绪**：内核的登录态是「带 token 的地址换一次签名 cookie」，
+        // 把 401 当成就绪，主窗口就会拿着一个换不到 cookie 的地址加载，窗口打开
+        // 却永远停在登录前、且没有任何报错。整段排查见
+        // docs/decisions/kernel-lifecycle.md。
+        if (!res.statusCode || res.statusCode >= 500 || res.statusCode === 401) {
           this.#schedule(deadline, attempt);
           return;
         }
-        this.#confirmReady(/** @type {string} */ (url));
+        this.#confirmReady(url);
       });
       req.on('error', () => this.#schedule(deadline, attempt));
       req.setTimeout(2000, () => {
@@ -392,7 +426,10 @@ class DshService extends EventEmitter {
   #schedule(deadline, attempt) {
     if (this.stopped) return;
     if (Date.now() > deadline) {
-      this.emit('error', new Error(`dsh web 未在 30 秒内就绪（${this.url}）`));
+      // 秒数从常量算，别写死在文案里——改了预算却忘了改这句话，日志就会骗人。
+      this.emit('error', new Error(
+        `dsh web 未在 ${(READY_TIMEOUT_MS / 1000).toFixed(0)} 秒内就绪（${this.url}）`
+      ));
       return;
     }
     setTimeout(attempt, 250);

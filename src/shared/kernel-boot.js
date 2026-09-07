@@ -12,14 +12,40 @@ const http = require('node:http');
 const URL_LINE_RE = /dsh web:\s+(https?:\/\/\S+)/;
 // 等这行出现的上限。超时说明内核连端口都没绑上，多半是启动阶段就崩了。
 //
-// 20 秒是**面向用户**的取舍：超时后 DshService 会退回「自己探端口」的老做法，
-// 而这段时间用户正对着闪屏等，不能太长（见 dsh-service.js 的
-// #fallbackToExplicitPort 注释）。
+// **45 秒是量出来的，不是拍的。** 原先是 20 秒，理由是「用户正对着闪屏等，不能太
+// 长」——但实测冷启动（重启电脑后第一次打开，杀毒软件要现扫一万四千多个内核文件）
+// 这行要 20.1s 才出来，正正好卡在线上：等到就正常，差零点几秒就被判超时、内核被
+// 杀掉重起一轮，白白多花二十秒。缩短超时并不能让慢的机器变快，只会把「慢一点」
+// 变成「重来一次」。见 dsh-service.js 的 #fallbackToExplicitPort。
 //
-// **构建期自检不用这个值**：scripts/verify-kernel.mjs 有自己的、宽松得多的预算。
+// **构建期自检不用这个值**：scripts/verify-kernel.mjs 有自己的、更宽松的预算。
 // 那边超时的后果是「构建失败」而不是「用户多等几秒」，CI runner 比开发机慢一截，
-// 拿面向用户的紧预算去卡构建只会换来一堆假红。理由写在那个文件里。
-const URL_LINE_TIMEOUT_MS = 20000;
+// 拿面向用户的预算去卡构建只会换来一堆假红。理由写在那个文件里。
+const URL_LINE_TIMEOUT_MS = 45000;
+
+/**
+ * 把地址行给的地址规范成探活用的根地址：路径归 `/`，**query 原样留着**。
+ *
+ * 地址行长这样：`http://127.0.0.1:<port>/?token=<token>`，那个 token 是内核的登录
+ * 凭据。曾经这里是 `url + '/'` 直接拼字符串，拼出来是 `...?token=<token>/` ——
+ * token 尾巴上多一个斜杠，内核一律判 401。当时的探活把 401 也算作「就绪」，所以
+ * 这个错拼一直没露头；一旦开始认真对待 401（401 = 还没登录成功 = 没就绪），
+ * 它就会让探活永远通不过。整段排查见 docs/decisions/kernel-lifecycle.md。
+ *
+ * @param {string} base
+ * @returns {string}
+ */
+function probeUrl(base) {
+  try {
+    const url = new URL(base);
+    url.pathname = '/';
+    return url.href;
+  } catch {
+    // 地址行是正则匹配出来的，理论上不会解析失败；真失败了就原样交出去，
+    // 让调用方自己的错误分支去处理，不在这里抛。
+    return base;
+  }
+}
 
 /**
  * 等内核把地址行打出来。进程中途退出就立刻失败，不空等到超时 —— 那正是「新内核
@@ -77,6 +103,7 @@ function waitHttpReady(url, timeoutMs, isDead) {
 module.exports = {
   URL_LINE_RE,
   URL_LINE_TIMEOUT_MS,
+  probeUrl,
   waitUrlLine,
   waitHttpReady,
 };

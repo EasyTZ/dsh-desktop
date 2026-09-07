@@ -18,6 +18,10 @@ const { showUpdaterWindow, hideUpdaterWindow, destroyUpdaterWindow } = require('
 const { showAboutWindow, closeAboutWindow } = require('./about-window');
 const { reconcileProfilePlugins } = require('../shared/profile-plugins-installer');
 const { readKernelPid, clearKernelPid, shouldKillOrphan } = require('../shared/orphan-kernel');
+const { installFileLogger } = require('../shared/file-logger');
+
+// 越早装越好：装之前打的日志（比如下面 gotLock 判断本身）就还是进黑洞。
+installFileLogger(path.join(app.getPath('userData'), 'main.log'));
 
 const APP_ID = 'com.deepseek.desktop';
 const AUTHOR = 'EasyTZ';
@@ -46,6 +50,11 @@ if (!gotLock) {
   let updater = null;
   /** @type {InstanceType<typeof AppUpdateChecker>|null} */
   let appUpdateChecker = null;
+  // dsh 就绪时那个带 token 的原始地址。GPU 子进程崩溃后靠重新 loadURL 它恢复画面
+  // —— 理由见 window.js 里 render-process-gone 的注释：带 token 的地址能无条件
+  // 重新鉴权，不依赖会话 cookie 还在不在。
+  /** @type {string|null} */
+  let currentDshUrl = null;
   // 外壳自身查到的新版本（{version, url} 或 null）。托盘菜单要在检查完成后随时
   // 能重建出「有没有这一项」，而检查完成时托盘不一定已经建好（首启时 check 的
   // 8s 延迟点，tray 通常已经在 service 的 ready 回调里建过了，但顺序不作为
@@ -414,6 +423,7 @@ if (!gotLock) {
 
     service.on('ready', (url) => {
       console.log(`[app] dsh 就绪: ${url}`);
+      currentDshUrl = url;
       notifications.setBaseUrl(url);
       notifications.start();
       if (win && !win.isDestroyed()) {
@@ -699,8 +709,9 @@ if (!gotLock) {
   // reload 一下让渲染进程重新走一遍首帧提交。
   app.on('child-process-gone', (_event, details) => {
     if (details.type !== 'GPU') return;
-    console.warn('[app] GPU 子进程异常退出，自动重新加载主窗口:', details.reason);
-    if (win && !win.isDestroyed()) win.webContents.reload();
+    console.warn('[app] GPU 子进程异常退出，重新加载主窗口:', details.reason);
+    // 同样走带 token 的原始地址，不用 reload()（见 window.js 的注释）。
+    if (win && !win.isDestroyed() && currentDshUrl) win.loadURL(currentDshUrl);
   });
 
   app.on('second-instance', () => {

@@ -77,14 +77,17 @@ function createMainWindow(url, { onCloseRequest, onFocusChanged } = {}) {
   win.once('ready-to-show', () => win.show());
 
   // 自愈：渲染进程被 GPU/显卡驱动拖垮而异常退出时（典型场景是开机瞬间独显/核显
-  // 切换还没稳定，见 2026-09-07 排查记录），Chromium 不会自己重新发起渲染，
-  // 表现为窗口打开但一片黑、没有任何报错。这里不用重弹崩溃框或重启内核（内核
-  // 本身没事），reload 一次通常就够——这时驱动栈大概率已经稳定，等价于用户
-  // 手动退出重开那一步。
+  // 切换还没稳定），Chromium 不会自己重新发起渲染，表现为窗口打开但一片黑、
+  // 没有任何报错。
+  //
+  // 恢复用 `loadURL(url)` 而不是 `webContents.reload()`：传进来的 url 带着内核的
+  // 登录 token，重新加载它等于**无条件再鉴权一次**，会话 cookie 在不在都能起来。
+  // reload 走的是当前地址（首次加载后内核会 303 到不带 token 的 `/`），只有 cookie
+  // 还在才通得过 —— 大多数时候是通的，但没必要把恢复路径压在这个前提上。
   win.webContents.on('render-process-gone', (_event, details) => {
     if (win.isDestroyed()) return;
-    console.warn('[window] 渲染进程异常退出，自动重新加载:', details.reason);
-    win.webContents.reload();
+    console.warn('[window] 渲染进程异常退出，重新加载原始地址:', details.reason);
+    win.loadURL(url);
   });
 
   // 推送最大化状态给渲染进程，用于切换「最大化 / 还原」按钮图标。
