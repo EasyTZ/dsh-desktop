@@ -27,10 +27,13 @@ const APP_ID = 'com.deepseek.desktop';
 const AUTHOR = 'EasyTZ';
 const AUTHOR_URL = 'https://github.com/EasyTZ';
 const REPO_URL = 'https://github.com/EasyTZ/dsh-desktop';
+// Gitee 镜像仓库：跟外壳自更新查版本用的是同一个仓库（app-updater.js 里另有一份
+// GITEE_REPO_URL），国内用户打不开 GitHub 时从这里拿代码和发行包。
+const GITEE_REPO_URL = 'https://gitee.com/huo_sydney/dsh-desktop';
 const ISSUES_URL = `${REPO_URL}/issues/new/choose`;
 // 「关于」窗口能打开的全部外链。渲染进程只能报一个键名，地址在这里查表——
 // 不给它「让主进程打开任意 URL」的口子（见 preload/about.js）。
-const ABOUT_LINKS = { repo: REPO_URL, author: AUTHOR_URL, issues: ISSUES_URL };
+const ABOUT_LINKS = { repo: REPO_URL, gitee: GITEE_REPO_URL, author: AUTHOR_URL, issues: ISSUES_URL };
 const gotLock = app.requestSingleInstanceLock();
 
 if (!gotLock) {
@@ -586,6 +589,7 @@ if (!gotLock) {
   const trayMenuOpts = () => ({
     onShow: toggleWindow,
     onQuit: quitApp,
+    onRestart: restartApp,
     onCheckUpdate: openUpdater,
     onFeedback: openFeedback,
     onAbout: openAbout,
@@ -693,6 +697,8 @@ if (!gotLock) {
     author: AUTHOR,
     repoUrl: REPO_URL,
     repoLabel: REPO_URL.replace(/^https?:\/\/github\.com\//, ''),
+    giteeUrl: GITEE_REPO_URL,
+    giteeLabel: GITEE_REPO_URL.replace(/^https?:\/\/gitee\.com\//, ''),
     license: 'MIT',
     safeMode,
   }));

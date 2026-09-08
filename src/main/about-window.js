@@ -35,7 +35,9 @@ async function showAboutWindow({ mainWindow } = {}) {
 
   const created = new BrowserWindow({
     width: 400,
-    height: 400,
+    // 高度跟着信息表的行数走：5 行（应用/内核/作者/GitHub/Gitee）在 400 高里会
+    // 顶到 footer，wrap 是 overflow:hidden，超出的部分直接被切掉而不是出滚动条。
+    height: 440,
     resizable: false,
     minimizable: false,
     maximizable: false,

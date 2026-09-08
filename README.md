@@ -49,7 +49,7 @@
 连 Release 页面本身都打不开的话，把代理前缀拼在完整原始地址前面就是下载地址，版本号换成最新的即可：
 
 ```
-https://gh-proxy.com/https://github.com/EasyTZ/dsh-desktop/releases/download/v1.7.9/DeepSeek-Harness-Desktop-Setup-1.7.9.exe
+https://gh-proxy.com/https://github.com/EasyTZ/dsh-desktop/releases/download/v1.8.0/DeepSeek-Harness-Desktop-Setup-1.8.0.exe
 ```
 
 代理由第三方运营，会挂也会限速；换个前缀（如 `https://ghfast.top/`）拼在同样的原始地址前通常也能下。

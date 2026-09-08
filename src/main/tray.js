@@ -27,6 +27,7 @@ function safeModeLabel(safeMode) {
  * @typedef {object} MenuOpts
  * @property {() => void} onShow
  * @property {() => void} onQuit
+ * @property {() => void} [onRestart]
  * @property {() => void} onCheckUpdate
  * @property {() => void} onFeedback
  * @property {() => void} [onAbout]
@@ -42,19 +43,20 @@ function safeModeLabel(safeMode) {
  * 时也要重建，让那一项的文案跟着状态变。
  * @param {MenuOpts} opts
  */
-function buildTrayMenu({ onShow, onQuit, onCheckUpdate, onFeedback, onAbout, onToggleSafeMode, safeMode,
-  kernelVersion, appUpdate, onOpenAppUpdate }) {
+function buildTrayMenu({ onShow, onQuit, onRestart, onCheckUpdate, onFeedback, onAbout, onToggleSafeMode,
+  safeMode, kernelVersion, appUpdate, onOpenAppUpdate }) {
+  // 整份菜单只留一条分割线：它把「重启 / 退出」这两项会让窗口消失的动作跟上面
+  // 那些点了就地打开一个窗口的入口隔开。中间再插分割线只会把七八项切成一堆
+  // 两行的碎块，反而更难扫。
   /** @type {import('electron').MenuItemConstructorOptions[]} */
   const items = [
     { label: '显示 / 隐藏', click: onShow },
-    { type: 'separator' },
   ];
   // 外壳自身有新版本时才出现这一项——常态下不占位置，跟内核更新那一项
   // （常驻、点了才查）刻意不同：外壳的更新只能靠用户手动下载，多一步「点了才
   // 知道有没有」纯粹添麻烦，不如查到了就直接摆在菜单里。
   if (appUpdate) {
     items.push({ label: `有新版本 v${appUpdate.version}，点击查看`, click: onOpenAppUpdate });
-    items.push({ type: 'separator' });
   }
   items.push({ label: checkUpdateLabel(kernelVersion), click: onCheckUpdate });
   // 安全模式常驻一项：以前只能从崩溃对话框进，但「插件装完界面卡死 / 白屏但内核
@@ -62,13 +64,13 @@ function buildTrayMenu({ onShow, onQuit, onCheckUpdate, onFeedback, onAbout, onT
   if (onToggleSafeMode) {
     items.push({ label: safeModeLabel(safeMode), click: onToggleSafeMode });
   }
-  items.push({ type: 'separator' });
+  items.push({ label: '反馈问题', click: onFeedback });
+  // 「关于」压在上半组的最后一项：它跟反馈问题一样只是打开一个窗口，划到
+  // 「重启 / 退出」那一组里会让人以为它也会动进程。退出永远是最后一项。
   if (onAbout) items.push({ label: '关于', click: onAbout });
-  items.push(
-    { label: '反馈问题', click: onFeedback },
-    { type: 'separator' },
-    { label: '退出', click: onQuit },
-  );
+  items.push({ type: 'separator' });
+  if (onRestart) items.push({ label: '重启', click: onRestart });
+  items.push({ label: '退出', click: onQuit });
   return Menu.buildFromTemplate(items);
 }
 
@@ -93,6 +95,12 @@ function installMacApplicationMenu(opts) {
   const safeModeItems = opts.onToggleSafeMode
     ? [{ label: safeModeLabel(opts.safeMode), click: opts.onToggleSafeMode }]
     : [];
+  /** @type {import('electron').MenuItemConstructorOptions[]} */
+  const restartItems = opts.onRestart ? [{ label: '重启', click: opts.onRestart }] : [];
+  /** @type {import('electron').MenuItemConstructorOptions[]} */
+  const dockRestartItems = opts.onRestart
+    ? [{ type: 'separator' }, { label: '重启', click: opts.onRestart }]
+    : [];
   // 「关于」用我们自己的窗口而不是系统 `role: 'about'`：系统那个只会显示版本号和
   // 版权，内核版本、仓库地址都放不进去，而且长得跟更新中心完全不是一套。
   /** @type {import('electron').MenuItemConstructorOptions} */
@@ -115,6 +123,7 @@ function installMacApplicationMenu(opts) {
         { role: 'hideOthers' },
         { role: 'unhide' },
         { type: 'separator' },
+        ...restartItems,
         { label: '退出', accelerator: 'Command+Q', click: opts.onQuit },
       ],
     },
@@ -139,8 +148,9 @@ function installMacApplicationMenu(opts) {
       updateItem,
       ...safeModeItems,
       ...appUpdateItems,
-      ...(opts.onAbout ? [{ label: '关于', click: opts.onAbout }] : []),
       { label: '反馈问题', click: opts.onFeedback },
+      ...(opts.onAbout ? [{ label: '关于', click: opts.onAbout }] : []),
+      ...dockRestartItems,
     ]));
   }
 }
