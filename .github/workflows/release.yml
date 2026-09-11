@@ -175,9 +175,11 @@ jobs:
           test ! -f "$RES/kernel/kernel.tar" || { echo "不该有 kernel.tar"; exit 1; }
           test -x "$RES/kernel/node" || { echo "内核 node 缺失或不可执行"; exit 1; }
           echo "内核 node: $(file -b "$RES/kernel/node" | head -c 80)"
+          # 期望数量从随包清单读，不写死：增删插件时这里曾因数字没跟着改而拦下发版。
+          WANT=$(node -p "require('./plugins/profile-plugins.json').length")
           TGZ=$(ls "$RES/plugins/profile"/*.tgz | wc -l | tr -d ' ')
-          echo "随包插件 tgz: $TGZ 个"
-          test "$TGZ" = "5" || { echo "插件数量不对，应为 5"; exit 1; }
+          echo "随包插件 tgz: $TGZ 个（清单 $WANT 个）"
+          test "$TGZ" = "$WANT" || { echo "插件数量不对，应为 $WANT"; exit 1; }
           test -f "$RES/iconTemplate.png" || { echo "缺 mac 托盘 template 图"; exit 1; }
           echo "::endgroup::"
 
