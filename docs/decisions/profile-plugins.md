@@ -2,7 +2,7 @@
 
 ### 自定义插件契约（最容易出错的地方）
 
-**插件是用户的东西，不是内核的一部分。** 五个插件全部住在 `$DSH_HOME/profiles/web/`（patch 层栈的**第 2 层**，dsh 官方的 profile 层），由 pnpm 装成独立的包，自己 `insert` 自己的 loader 条目。桌面版只做三件事：**首启把随包的 tgz 装进去**、**按用户开关压一层停用 overlay**、**给插件市场提供装/卸的入口**。
+**插件是用户的东西，不是内核的一部分。** 随包插件全部住在 `$DSH_HOME/profiles/web/`（patch 层栈的**第 2 层**，dsh 官方的 profile 层），由 pnpm 装成独立的包，自己 `insert` 自己的 loader 条目。桌面版只做三件事：**首启把随包的 tgz 装进去**、**按用户开关压一层停用 overlay**、**给插件市场提供装/卸的入口**。
 
 这条边界是唯一的裁决标准，判据是**生命周期归谁**：跟着内核走的（换内核就没、用户删不掉）归内核；跟着用户走的（换内核还在、用户能自己删）归 profile。插件属于后者，所以：
 
@@ -14,7 +14,7 @@
 
 **清单**：`plugins/profile-plugins.json`，只有 `packageName` 和可选的 `required`。校验在 `loadProfilePluginManifest`（合法包名形状 + 不许重复）—— 包名会被摊进 `path.join`，不校验等于把「操作哪个目录」交给清单文本。
 
-**`required: true` 只给 `@easytz/dsh-market`**：它是插件的管理入口。对账时只要缺失或版本落后于随包版本就会被强制装回，这正是「卸载市场也能自愈」的机制来源——市场自己的卸载接口不再挡自己（`PROTECTED_PACKAGES`），因为卸了也会在下次启动前被这条对账逻辑自动装回来。**不降级**：市场自己就是「一键更新」按钮的来源，用户在应用内把市场更新到比随包版本更新的版本后，这条自愈逻辑曾经会在下次启动时把它拉回随包版本——表现是「点了更新、重启后又变回旧版，且『有更新』提示还在」，已修（见 `planProfileReconcile` 的判据，跟非 required 插件「只升级不降级」是同一条）。真正的单向门是**停用**：那条走的是 overlay patch 而不是对账，市场的停用接口仍然把自己列进保护名单，因为停用没有对应的自愈路径。其余四个是**播种一次**：首启装进去，用户卸载了就不再自动装回来，但市场的「随应用分发」分组里随时能一键装回。
+**`required: true` 只给 `@easytz/dsh-market`**：它是插件的管理入口。对账时只要缺失或版本落后于随包版本就会被强制装回，这正是「卸载市场也能自愈」的机制来源——市场自己的卸载接口不再挡自己（`PROTECTED_PACKAGES`），因为卸了也会在下次启动前被这条对账逻辑自动装回来。**不降级**：市场自己就是「一键更新」按钮的来源，用户在应用内把市场更新到比随包版本更新的版本后，这条自愈逻辑曾经会在下次启动时把它拉回随包版本——表现是「点了更新、重启后又变回旧版，且『有更新』提示还在」，已修（见 `planProfileReconcile` 的判据，跟非 required 插件「只升级不降级」是同一条）。真正的单向门是**停用**：那条走的是 overlay patch 而不是对账，市场的停用接口仍然把自己列进保护名单，因为停用没有对应的自愈路径。其余三个是**播种一次**：首启装进去，用户卸载了就不再自动装回来，但市场的「随应用分发」分组里随时能一键装回。
 
 **播种账本**（`userData/profile-plugins-seeded.json`）是「从没装过」和「装过但被用户卸了」的区分手段 —— 同一随包版本缺失时尊重用户卸载；但桌面版带来更高的随包版本、而插件仍缺失时会重新播种默认插件。这样旧版、联调或历史安装失败留下的账本不会让默认插件永远消失，用户也仍可在新版中再次卸载。
 
@@ -53,16 +53,15 @@
 
 注意这条测试读的是**当前解析到的**插件源码：联调态读工作副本，非联调态读按 tag 拉下来的那份。所以解除联调后它报红，通常不是误报，而是在说「钉住的 tag 里还没有这条防线」——安装包里装的就是那份没防线的代码，得发新 tag 并升 pin。
 
-### 现有的五个插件
+### 现有的四个插件
 
-五个插件**全部**已拆仓、全部走 profile 层、全部可被用户卸载（市场除外）。本仓库通过 git 依赖 vendor 在 `node_modules/@easytz/` 下，只为打 tgz；运行时用的是用户 profile 里那份。
+四个插件**全部**已拆仓、全部走 profile 层、全部可被用户卸载（市场除外）。本仓库通过 git 依赖 vendor 在 `node_modules/@easytz/` 下，只为打 tgz；运行时用的是用户 profile 里那份。
 
 | 插件 | entry id | 干什么 | 接入的槽 |
 |---|---|---|---|
 | `@easytz/dsh-ui-balance` | `dsdesktop-balance` | 每条回复下方显示 DeepSeek 余额 | `conversation.chat.turnTail` |
 | `@easytz/dsh-git` | `dsdesktop-git` | Git 面板（改动/暂存/提交/推送/切分支/撤销） | `sidebar.footer.action`（`order: 100`）+ `shell.overlay` |
 | `@easytz/dsh-terminal-panel` | `dsdesktop-terminal-panel` | 终端面板（命令控制台） | `sidebar.footer.action`（`order: 90`）+ `shell.overlay` |
-| `@easytz/dsh-reveal-explorer` | `dsdesktop-reveal-explorer` | 在系统文件管理器中打开工作区 | `conversation.session.header.utilities` |
 | `@easytz/dsh-market` | `dsdesktop-market` | 插件市场：已安装列表（分「随应用分发」/「从市场安装」两组）+ npm 检索 + 一键装卸 + 热开关 + 图片预览。`required: true`，无法卸载；安全模式下唯一加载的插件 | `sidebar.footer.action`（`order: 110`）+ `shell.overlay` |
 
 **槽的两条通用规则**（翻上游类型声明与 frontend bundle 得来）：

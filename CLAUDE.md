@@ -24,7 +24,7 @@ L4  桌面外壳      Electron 主进程                    纯我们的，上�
 L3  壳↔内核的桥   preload + IPC                      越薄越好，能挤进 L2 就挤
     自定义标题栏、updater UI
 L2  桌面特有能力  dsh 插件（走官方扩展点）            我们的代码，跑在**用户的 profile** 里
-    插件市场、Git 面板、终端面板、余额显示、在资源管理器中打开…
+    插件市场、Git 面板、终端面板、余额显示…
 L1  内核          @deepseek-ai/dsh registry 发行包    只读，一个字节都不改
 ```
 

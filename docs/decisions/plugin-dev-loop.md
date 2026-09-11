@@ -47,7 +47,7 @@
 
 ### 插件拆分后的开发内环
 
-五个通用插件已拆成独立仓库（`EasyTZ/dsh-market`、`dsh-git`、`dsh-terminal-panel`、`dsh-ui-balance`、`dsh-reveal-explorer`），本仓库通过 `package.json` 里的 git 依赖（**钉 tag，不钉分支**——钉分支会让打包不可复现）vendor 进 `node_modules/`。改插件代码的两种方式：
+四个通用插件已拆成独立仓库（`EasyTZ/dsh-market`、`dsh-git`、`dsh-terminal-panel`、`dsh-ui-balance`），本仓库通过 `package.json` 里的 git 依赖（**钉 tag，不钉分支**——钉分支会让打包不可复现）vendor 进 `node_modules/`。改插件代码的两种方式：
 
 - **发版**：改完插件仓库 → push + 打**新** tag → 回本仓库把 `package.json` 里对应的 `#tag` 升一下 → `npm run refresh-plugins`。**别用 `npm install`**：npm 缓存 git 依赖的解析结果，改了 `#tag` 之后经常不重新拉，装出来还是上一版——表现是「代码明明改了、装完却没变化」，很容易被误当成插件本身的 bug 排查半天。`refresh-plugins` 删目录再按显式 spec 装，绕开这条缓存路径（它也会拒绝在联调模式下运行）。
 - **高频联调**：`npm run link-plugins`，改完**直接生效**，不用 push/tag，也没有任何拷贝或重装步骤（改 `lib/client.js` 内核 HMR 立刻推给浏览器，改 `lib/index.js` 重启内核）。`npm run plugins-status` 看当前状态，`npm run unlink-plugins` 解除并按 pin 恢复。
@@ -89,7 +89,7 @@ junction，那个分支永远不命中，`required` 的自愈语义没有被削�
 
 ### 插件发到 npm
 
-五个插件都以 `@easytz/` scope 发布在 npm 上（`easytz` 就是 npm 用户名，scope 因此对得上）。它们同时存在于三个地方，别搞混各自的用途：
+随包插件都以 `@easytz/` scope 发布在 npm 上（`easytz` 就是 npm 用户名，scope 因此对得上）。它们同时存在于三个地方，别搞混各自的用途：
 
 | 渠道 | 谁用 | 内容来自 |
 |---|---|---|

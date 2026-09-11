@@ -49,7 +49,7 @@
 连 Release 页面本身都打不开的话，把代理前缀拼在完整原始地址前面就是下载地址，版本号换成最新的即可：
 
 ```
-https://gh-proxy.com/https://github.com/EasyTZ/dsh-desktop/releases/download/v1.8.0/DeepSeek-Harness-Desktop-Setup-1.8.0.exe
+https://gh-proxy.com/https://github.com/EasyTZ/dsh-desktop/releases/download/v1.9.0/DeepSeek-Harness-Desktop-Setup-1.9.0.exe
 ```
 
 代理由第三方运营，会挂也会限速；换个前缀（如 `https://ghfast.top/`）拼在同样的原始地址前通常也能下。
@@ -128,8 +128,6 @@ https://gh-proxy.com/https://github.com/EasyTZ/dsh-desktop/releases/download/v1.
 侧边栏直接显示账户余额和本次花费；详情面板按模型汇总 token、日/周/月用量与当前单价，不必切换到账单网页。
 
 <p align="center"><img src="docs/plugins/balance.png" alt="余额与花费面板" width="560"></p>
-
-还有一个 **「在资源管理器中打开」** —— 右键文件直接跳到系统文件管理器（Windows 资源管理器 / macOS 访达 / Linux 文件管理器）。
 
 > 这些插件都装在你自己的 dsh 配置目录里，和你从市场装的第三方插件是同一套机制 —— 换内核不影响它们，你也可以随时卸掉。
 

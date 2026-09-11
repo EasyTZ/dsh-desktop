@@ -277,8 +277,8 @@ test('saveSeedState: 目录不存在时自动建（首次启动 userData 里还�
   assert.deepStrictEqual(loadSeedState(file), { x: '1.0.0' });
 });
 
-test('真实清单：五个插件都在 A1，且只有插件市场是 required', () => {
-  // 这条钉的是本次迁移的结论：四个插件与市场装的插件同一种管理模式（可自主装卸），
+test('真实清单：四个插件都在 A1，且只有插件市场是 required', () => {
+  // 这条钉的是本次迁移的结论：随包插件与市场装的插件同一种管理模式（可自主装卸），
   // 唯独市场自己必须常驻——它没了就没有任何能装卸插件的界面。「卸载」市场在
   // dsDesktop 里走的是另一条路（假卸载：写停用标记，见 dsh-service.js 的
   // exclude 只在安全模式下才放行市场），不经过这份随包清单的对账，required
@@ -286,7 +286,7 @@ test('真实清单：五个插件都在 A1，且只有插件市场是 required',
   const plugins = loadProfilePluginManifest(path.join(__dirname, '..', 'plugins'));
   const names = plugins.map((p) => p.packageName).sort();
   assert.deepStrictEqual(names, [
-    '@easytz/dsh-git', '@easytz/dsh-market', '@easytz/dsh-reveal-explorer',
+    '@easytz/dsh-git', '@easytz/dsh-market',
     '@easytz/dsh-terminal-panel', '@easytz/dsh-ui-balance',
   ]);
   const required = plugins.filter((p) => p.required === true).map((p) => p.packageName);

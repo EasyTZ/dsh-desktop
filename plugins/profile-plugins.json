@@ -11,8 +11,5 @@
   },
   {
     "packageName": "@easytz/dsh-ui-balance"
-  },
-  {
-    "packageName": "@easytz/dsh-reveal-explorer"
   }
 ]
